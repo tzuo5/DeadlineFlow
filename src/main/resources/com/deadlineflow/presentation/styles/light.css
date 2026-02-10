@@ -7,6 +7,12 @@
     -df-border: rgba(17, 24, 39, 0.10);
     -df-shadow: rgba(17, 24, 39, 0.08);
     -df-shadow-strong: rgba(17, 24, 39, 0.16);
+    -df-toolbar-bg: #EEF2F9;
+    -df-toolbar-border: rgba(17, 24, 39, 0.13);
+    -df-toolbar-divider: rgba(17, 24, 39, 0.14);
+    -df-summary-card: #F9FBFF;
+    -df-timeline-card: #FFFFFF;
+    -df-timeline-border: rgba(59, 91, 150, 0.24);
 
     -df-text-primary: #111827;
     -df-text-secondary: rgba(17, 24, 39, 0.78);
@@ -18,6 +24,7 @@
     -df-accent-pressed: #1E40AF;
     -df-accent-soft: rgba(37, 99, 235, 0.22);
     -df-focus: #3B82F6;
+    -df-focus-soft: rgba(59, 130, 246, 0.62);
 
     -df-danger: #EF4444;
     -df-danger-soft: rgba(239, 68, 68, 0.12);
@@ -29,6 +36,9 @@
     -df-selection-bg: rgba(37, 99, 235, 0.16);
     -df-selection-fg: #0F172A;
     -df-slider-track: rgba(17, 24, 39, 0.16);
+    -df-scrollbar-track: rgba(17, 24, 39, 0.12);
+    -df-scrollbar-thumb: rgba(17, 24, 39, 0.32);
+    -df-scrollbar-thumb-hover: rgba(17, 24, 39, 0.46);
 
     -df-banner-bg: #EEF5FF;
     -df-banner-fg: #1E3A8A;

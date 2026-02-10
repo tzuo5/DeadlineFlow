@@ -192,6 +192,10 @@ public class MainViewModel {
         return projectTasks;
     }
 
+    public ObservableList<Task> allTasks() {
+        return allTasks;
+    }
+
     public ObservableList<Conflict> conflicts() {
         return conflicts;
     }
@@ -282,6 +286,24 @@ public class MainViewModel {
             return;
         }
         findTask(task.id()).ifPresent(selectedTask::set);
+    }
+
+    public void selectTaskById(String taskId) {
+        if (taskId == null) {
+            selectedTask.set(null);
+            return;
+        }
+        findTask(taskId).ifPresent(selectedTask::set);
+    }
+
+    public int taskCountForProject(long projectId) {
+        int count = 0;
+        for (Task task : allTasks) {
+            if (task.projectId() == projectId) {
+                count++;
+            }
+        }
+        return count;
     }
 
     public void createProject(String name, String color, int priority) {

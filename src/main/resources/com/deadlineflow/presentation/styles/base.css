@@ -11,14 +11,60 @@
     -fx-background-color: -df-bg;
 }
 
+.main-root.lang-zh {
+    -fx-font-family: "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
 .toolbar-shell {
     -fx-spacing: 8;
 }
 
 .toolbar-row {
-    -fx-min-height: 54;
-    -fx-pref-height: 54;
+    -fx-padding: 9 12 9 12;
+    -fx-background-color: -df-toolbar-bg;
+    -fx-border-color: -df-toolbar-border;
     -fx-alignment: center-left;
+}
+
+.toolbar-controls-row {
+    -fx-min-height: 56;
+    -fx-pref-height: 56;
+}
+
+.toolbar-zoom-row {
+    -fx-min-height: 46;
+    -fx-pref-height: 46;
+}
+
+.toolbar-group-label {
+    -fx-font-size: 12px;
+    -fx-font-weight: 700;
+    -fx-text-fill: -df-text-primary;
+}
+
+.toolbar-projects-button {
+    -fx-padding: 5 12 5 12;
+}
+
+.toolbar-projects-button.projects-toggle-active {
+    -fx-background-color: -df-accent;
+    -fx-border-color: -df-accent;
+    -fx-text-fill: white;
+}
+
+.toolbar-inspector-button {
+    -fx-padding: 5 12 5 12;
+}
+
+.toolbar-inspector-button.inspector-toggle-active {
+    -fx-background-color: -df-accent;
+    -fx-border-color: -df-accent;
+    -fx-text-fill: white;
+}
+
+.toolbar-divider {
+    -fx-background-color: -df-toolbar-divider;
+    -fx-opacity: 0.85;
 }
 
 .status-banner {
@@ -38,13 +84,25 @@
     -fx-spacing: 12;
 }
 
+.workspace-row {
+    -fx-spacing: 0;
+}
+
+.projects-sidebar-host {
+    -fx-padding: 0 12 0 0;
+}
+
+.task-inspector-host {
+    -fx-padding: 0 0 0 12;
+}
+
 .panel-card {
     -fx-background-color: -df-card;
     -fx-border-color: -df-border;
     -fx-border-width: 1;
     -fx-border-radius: 14;
     -fx-background-radius: 14;
-    -fx-effect: dropshadow(gaussian, -df-shadow, 8, 0.14, 0, 1);
+    -fx-effect: dropshadow(gaussian, -df-shadow, 6, 0.08, 0, 1);
 }
 
 .sidebar-card {
@@ -53,6 +111,9 @@
 
 .timeline-card {
     -fx-padding: 0;
+    -fx-background-color: -df-timeline-card;
+    -fx-border-color: -df-timeline-border;
+    -fx-effect: dropshadow(gaussian, -df-shadow-strong, 10, 0.12, 0, 2);
 }
 
 .inspector-card {
@@ -65,17 +126,44 @@
     -fx-text-fill: -df-text-primary;
 }
 
+.summary-row-shell {
+    -fx-min-height: 38;
+    -fx-pref-height: 38;
+    -fx-max-height: 38;
+}
+
 .summary-row {
     -fx-spacing: 12;
+    -fx-min-height: 38;
+    -fx-pref-height: 38;
+    -fx-max-height: 38;
 }
 
 .summary-card {
-    -fx-padding: 12;
-    -fx-spacing: 8;
+    -fx-background-color: -df-summary-card;
+    -fx-effect: dropshadow(gaussian, -df-shadow, 4, 0.05, 0, 1);
+}
+
+.summary-card-compact {
+    -fx-padding: 8 10 8 10;
+    -fx-spacing: 0;
+    -fx-alignment: center-left;
+}
+
+.summary-card-compact:hover {
+    -fx-background-color: -df-control-hover;
+    -fx-cursor: hand;
+}
+
+.summary-card-expanded {
+    -fx-padding: 10;
+    -fx-spacing: 6;
+    -fx-border-color: -df-toolbar-border;
+    -fx-effect: dropshadow(gaussian, -df-shadow-strong, 14, 0.18, 0, 3);
 }
 
 .summary-title {
-    -fx-font-size: 12px;
+    -fx-font-size: 11px;
     -fx-font-weight: 600;
     -fx-text-fill: -df-text-muted;
 }
@@ -98,17 +186,41 @@
 .summary-list .list-cell {
     -fx-background-color: transparent;
     -fx-text-fill: -df-text-secondary;
-    -fx-padding: 4 0 4 0;
+    -fx-padding: 2 0 2 0;
+    -fx-cursor: hand;
 }
 
 .summary-list .list-cell:filled:selected,
 .summary-list .list-cell:filled:selected:focused {
-    -fx-background-color: transparent;
+    -fx-background-color: -df-selection-bg;
+    -fx-background-radius: 8;
+}
+
+.summary-list .list-cell:filled:hover {
+    -fx-background-color: -df-control-hover;
+    -fx-background-radius: 8;
 }
 
 .summary-item-label {
     -fx-text-fill: -df-text-secondary;
     -fx-font-size: 12px;
+}
+
+.summary-item-title {
+    -fx-text-fill: -df-text-primary;
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+}
+
+.summary-item-due {
+    -fx-text-fill: -df-text-muted;
+    -fx-font-size: 11px;
+}
+
+.status-chip {
+    -fx-font-size: 10px;
+    -fx-font-weight: 700;
+    -fx-padding: 2 8 2 8;
 }
 
 .summary-pill {
@@ -139,6 +251,11 @@
     -fx-padding: 8 8 8 8;
 }
 
+.list-cell:filled:hover {
+    -fx-background-color: -df-control-hover;
+    -fx-background-radius: 10;
+}
+
 .list-cell:filled:selected,
 .list-cell:filled:selected:focused {
     -fx-background-color: -df-selection-bg;
@@ -148,6 +265,15 @@
 
 .project-item-label {
     -fx-text-fill: -df-text-primary;
+}
+
+.project-count-badge {
+    -fx-background-color: -df-control-hover;
+    -fx-text-fill: -df-text-muted;
+    -fx-font-size: 11px;
+    -fx-font-weight: 700;
+    -fx-padding: 1 7 1 7;
+    -fx-background-radius: 999;
 }
 
 .field-label {
@@ -166,6 +292,19 @@
     -fx-font-size: 12px;
     -fx-font-weight: 600;
     -fx-text-fill: -df-text-muted;
+}
+
+.inspector-task-title {
+    -fx-font-size: 11px;
+    -fx-font-weight: 700;
+    -fx-padding: 2 8 2 8;
+    -fx-background-radius: 999;
+    -fx-border-radius: 999;
+    -fx-alignment: center-left;
+}
+
+.inspector-card.inspector-active .inspector-input-target {
+    -fx-border-color: -df-focus-soft;
 }
 
 .segmented-control {
@@ -280,6 +419,13 @@
     -fx-highlight-text-fill: -df-text-primary;
 }
 
+.text-field:hover,
+.text-area:hover,
+.combo-box:hover,
+.date-picker:hover {
+    -fx-background-color: -df-control-hover;
+}
+
 .text-area .content {
     -fx-background-color: -df-control-bg;
     -fx-border-color: transparent;
@@ -336,6 +482,48 @@
     -fx-effect: dropshadow(gaussian, -df-shadow-strong, 5, 0.25, 0, 1);
 }
 
+.timeline-vertical-zoom-controls {
+    -fx-background-color: -df-control-bg;
+    -fx-border-color: -df-border;
+    -fx-border-radius: 12;
+    -fx-background-radius: 12;
+    -fx-effect: dropshadow(gaussian, -df-shadow, 5, 0.10, 0, 1);
+}
+
+.timeline-zoom-slider:vertical .track {
+    -fx-pref-width: 4;
+}
+
+.timeline-zoom-slider:vertical .thumb {
+    -fx-pref-width: 12;
+    -fx-pref-height: 12;
+}
+
+.gantt-scroll .scroll-bar:horizontal {
+    -fx-background-color: transparent;
+    -fx-opacity: 0;
+    -fx-padding: 0 8 3 8;
+}
+
+.gantt-scroll .scroll-bar:horizontal .track {
+    -fx-background-color: -df-scrollbar-track;
+    -fx-background-radius: 999;
+    -fx-pref-height: 6;
+}
+
+.gantt-scroll .scroll-bar:horizontal .thumb {
+    -fx-background-color: -df-scrollbar-thumb;
+    -fx-background-radius: 999;
+}
+
+.gantt-scroll .scroll-bar:horizontal:hover .thumb {
+    -fx-background-color: -df-scrollbar-thumb-hover;
+}
+
+.gantt-scroll .corner {
+    -fx-background-color: transparent;
+}
+
 .gantt-chart {
     -fx-background-color: transparent;
     -fx-background-radius: 12;
@@ -347,7 +535,7 @@
 }
 
 .gantt-bar-label {
-    -fx-font-size: 10.5px;
+    -fx-font-size: 11px;
     -fx-font-weight: 600;
     -fx-text-fill: white;
 }
@@ -359,4 +547,32 @@
     -fx-background-color: -df-danger;
     -fx-background-radius: 99;
     -fx-padding: 0 4 0 4;
+}
+
+.timeline-empty-state {
+    -fx-alignment: center;
+}
+
+.timeline-empty-icon {
+    -fx-font-size: 19px;
+    -fx-font-weight: 700;
+    -fx-text-fill: -df-text-muted;
+    -fx-background-color: -df-control-hover;
+    -fx-border-color: -df-border;
+    -fx-background-radius: 999;
+    -fx-border-radius: 999;
+    -fx-pref-width: 38;
+    -fx-pref-height: 38;
+    -fx-alignment: center;
+}
+
+.timeline-empty-title {
+    -fx-font-size: 14px;
+    -fx-font-weight: 700;
+    -fx-text-fill: -df-text-primary;
+}
+
+.timeline-empty-hint {
+    -fx-font-size: 12px;
+    -fx-text-fill: -df-text-muted;
 }

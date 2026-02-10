@@ -2,16 +2,17 @@ package com.deadlineflow.presentation.view.sections;
 
 import com.deadlineflow.domain.model.Dependency;
 import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.DatePicker;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
-import javafx.scene.control.Slider;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 
 public class TaskInspectorView extends VBox {
@@ -27,8 +28,8 @@ public class TaskInspectorView extends VBox {
     private final DatePicker dueDatePicker = new DatePicker();
 
     private final Label progressLabel = new Label();
-    private final Slider progressSlider = new Slider(0, 100, 0);
-    private final Label progressValueLabel = new Label("0%");
+    private final TextField progressField = new TextField("0");
+    private final Label progressValueLabel = new Label("%");
 
     private final Label descriptionLabel = new Label();
     private final TextArea descriptionArea = new TextArea();
@@ -55,6 +56,7 @@ public class TaskInspectorView extends VBox {
 
         inspectorTitleLabel.getStyleClass().add("section-title");
         selectedTaskLabel.getStyleClass().add("inspector-task-title");
+        selectedTaskLabel.setText("-");
         titleLabel.getStyleClass().add("field-label");
         startDateLabel.getStyleClass().add("field-label");
         dueDateLabel.getStyleClass().add("field-label");
@@ -67,13 +69,23 @@ public class TaskInspectorView extends VBox {
         titleField.getStyleClass().add("inspector-input-target");
         startDatePicker.getStyleClass().add("inspector-input-target");
         dueDatePicker.getStyleClass().add("inspector-input-target");
-        progressSlider.getStyleClass().add("inspector-input-target");
+        progressField.getStyleClass().add("inspector-input-target");
         descriptionArea.getStyleClass().add("inspector-input-target");
         statusComboBox.getStyleClass().add("inspector-input-target");
 
-        HBox progressRow = new HBox(10, progressSlider, progressValueLabel);
+        HBox progressRow = new HBox(8, progressField, progressValueLabel);
+        progressRow.getStyleClass().add("progress-row");
+        progressRow.setAlignment(Pos.CENTER_LEFT);
         progressRow.setFillHeight(true);
-        HBox.setHgrow(progressSlider, Priority.ALWAYS);
+        progressRow.setMaxWidth(Double.MAX_VALUE);
+        progressRow.setMinHeight(Region.USE_PREF_SIZE);
+        progressField.setAlignment(Pos.CENTER_RIGHT);
+        progressField.setMinWidth(80);
+        progressField.setPrefWidth(104);
+        progressField.setMaxWidth(120);
+        progressValueLabel.setMinWidth(16);
+        progressValueLabel.setMaxWidth(24);
+        progressValueLabel.setAlignment(Pos.CENTER_RIGHT);
 
         descriptionArea.setWrapText(true);
         descriptionArea.setMinHeight(104);
@@ -148,8 +160,8 @@ public class TaskInspectorView extends VBox {
         return progressLabel;
     }
 
-    public Slider progressSlider() {
-        return progressSlider;
+    public TextField progressField() {
+        return progressField;
     }
 
     public Label progressValueLabel() {

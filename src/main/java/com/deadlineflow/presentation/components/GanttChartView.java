@@ -3,6 +3,13 @@ package com.deadlineflow.presentation.components;
 import com.deadlineflow.domain.model.RiskLevel;
 import com.deadlineflow.domain.model.Task;
 import com.deadlineflow.domain.model.TimeScale;
+import javafx.animation.FadeTransition;
+import javafx.animation.Interpolator;
+import javafx.animation.KeyFrame;
+import javafx.animation.KeyValue;
+import javafx.animation.ScaleTransition;
+import javafx.animation.Timeline;
+import javafx.animation.TranslateTransition;
 import javafx.application.Platform;
 import javafx.beans.property.DoubleProperty;
 import javafx.beans.property.ObjectProperty;
@@ -15,29 +22,38 @@ import javafx.event.EventHandler;
 import javafx.geometry.BoundingBox;
 import javafx.geometry.Bounds;
 import javafx.geometry.Point2D;
+import javafx.geometry.Pos;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.Label;
+import javafx.scene.control.ScrollBar;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Tooltip;
+import javafx.scene.effect.DropShadow;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.LinearGradient;
 import javafx.scene.paint.Stop;
+import javafx.scene.shape.Line;
 import javafx.scene.shape.Rectangle;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.scene.text.Text;
 import javafx.scene.Scene;
+import javafx.util.Duration;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
@@ -48,6 +64,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -69,22 +86,40 @@ public class GanttChartView extends Region {
         String format(LocalDate startDate, LocalDate dueDate);
     }
 
-    private static final double HEADER_HEIGHT = 38;
-    private static final double ROW_HEIGHT = 38;
-    private static final double BAR_VERTICAL_PADDING = 7;
+    private static final double HEADER_HEIGHT = 34;
+    private static final double BASE_ROW_HEIGHT = 30;
+    private static final double BASE_BAR_VERTICAL_PADDING = 4;
     private static final double HANDLE_WIDTH = 7;
     private static final double MIN_VISIBLE_BAR_WIDTH = 44;
+    private static final double SELECTION_ANIMATION_WINDOW_MILLIS = 220;
+    private static final double MIN_HORIZONTAL_ZOOM = 0.25;
+    private static final double MAX_HORIZONTAL_ZOOM = 4.0;
+    private static final double MIN_ROW_ZOOM = 0.70;
+    private static final double MAX_ROW_ZOOM = 1.80;
+    private static final double HOURS_PER_DAY = 24.0;
+    private static final Duration HORIZONTAL_SCROLLBAR_FADE_DURATION = Duration.millis(150);
+    private static final Duration CURRENT_TIME_INDICATOR_REFRESH_INTERVAL = Duration.seconds(15);
     private static final boolean DRAG_DEBUG = Boolean.getBoolean("deadlineflow.debug.drag");
 
     private final Canvas headerCanvas = new Canvas();
     private final Canvas gridCanvas = new Canvas();
+    private final BackgroundGridLayer backgroundGridLayer = new BackgroundGridLayer(gridCanvas);
+    private final TodayIndicatorLayer todayIndicatorLayer = new TodayIndicatorLayer();
+    private final DependencyLayer dependencyLayer = new DependencyLayer();
     private final Pane taskBarsLayer = new Pane();
-    private final Pane dragOverlayLayer = new Pane();
-    private final StackPane content = new StackPane(gridCanvas, taskBarsLayer, dragOverlayLayer);
+    private final TaskLayer taskLayer = new TaskLayer(taskBarsLayer);
+    private final SelectionLayer selectionLayer = new SelectionLayer();
+    private final Rectangle interactionSurface = new Rectangle();
+    private final StackPane content = new StackPane(backgroundGridLayer, dependencyLayer, selectionLayer, taskLayer, todayIndicatorLayer);
     private final ScrollPane scrollPane = new ScrollPane(content);
+    private final VBox emptyState = new VBox();
+    private final Label emptyStateIconLabel = new Label("+");
+    private final Label emptyStateTitleLabel = new Label("No tasks yet.");
+    private final Label emptyStateHintLabel = new Label("Click \"+ Task\" to create your first item.");
 
     private final ObjectProperty<TimeScale> scale = new SimpleObjectProperty<>(TimeScale.WEEK);
     private final DoubleProperty zoom = new SimpleDoubleProperty(1.0);
+    private final DoubleProperty rowZoom = new SimpleDoubleProperty(1.0);
 
     private final ObjectProperty<Consumer<Task>> onTaskSelected = new SimpleObjectProperty<>();
     private final ObjectProperty<TaskDateChangeListener> onTaskDateChanged = new SimpleObjectProperty<>();
@@ -102,10 +137,14 @@ public class GanttChartView extends Region {
     private final Map<String, String> conflictMessageByTaskId = new HashMap<>();
     private final Set<String> criticalTaskIds = new HashSet<>();
     private final Map<String, Integer> slackByTaskId = new HashMap<>();
+    private final Set<String> knownTaskIds = new HashSet<>();
+    private final Set<String> pendingEntryAnimationTaskIds = new HashSet<>();
+    private boolean taskTrackingInitialized;
 
     private LocalDate timelineStart = LocalDate.now().minusDays(7);
     private LocalDate timelineEnd = LocalDate.now().plusDays(30);
     private String selectedTaskId;
+    private long selectionChangeAtMillis;
 
     private final Rectangle selectionOverlay = new Rectangle();
     private final Tooltip dragSelectionTooltip = new Tooltip();
@@ -118,20 +157,31 @@ public class GanttChartView extends Region {
     private int lastRenderedLastIndex = -1;
     private boolean editingEnabled = true;
     private boolean darkTheme;
+    private ScrollBar horizontalScrollBar;
+    private FadeTransition horizontalScrollbarFade;
+    private boolean timelineHovered;
+    private Timeline currentTimeIndicatorRefreshTimeline;
+    private Locale uiLocale = Locale.ENGLISH;
+    private boolean chineseTypography;
+    private String headerFontFamily = "Inter";
 
     public GanttChartView() {
         getStyleClass().add("gantt-chart");
+        refreshHeaderFontFamily();
 
         headerCanvas.getStyleClass().add("gantt-header");
         scrollPane.setFitToHeight(false);
         scrollPane.setFitToWidth(false);
         scrollPane.setPannable(true);
+        scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         scrollPane.getStyleClass().add("gantt-scroll");
 
         taskBarsLayer.setPickOnBounds(false);
-        dragOverlayLayer.setPickOnBounds(false);
-        dragOverlayLayer.setMouseTransparent(true);
-        dragOverlayLayer.getChildren().add(selectionOverlay);
+        interactionSurface.setManaged(false);
+        interactionSurface.setFill(Color.TRANSPARENT);
+        interactionSurface.setCursor(Cursor.CROSSHAIR);
+        selectionLayer.getChildren().addAll(interactionSurface, selectionOverlay);
+        selectionLayer.setPickOnBounds(false);
 
         selectionOverlay.setVisible(false);
         selectionOverlay.setManaged(false);
@@ -141,31 +191,54 @@ public class GanttChartView extends Region {
         selectionOverlay.setArcWidth(6);
         selectionOverlay.setArcHeight(6);
 
-        gridCanvas.setCursor(Cursor.CROSSHAIR);
-        gridCanvas.setOnMousePressed(this::onGridMousePressed);
-        gridCanvas.setOnMouseDragged(this::onGridMouseDragged);
-        gridCanvas.setOnMouseReleased(this::onGridMouseReleased);
-        gridCanvas.setOnMouseExited(event -> {
+        interactionSurface.setOnMousePressed(this::onGridMousePressed);
+        interactionSurface.setOnMouseDragged(this::onGridMouseDragged);
+        interactionSurface.setOnMouseReleased(this::onGridMouseReleased);
+        interactionSurface.setOnMouseExited(event -> {
             if (!dragSelection.active) {
                 hideDragSelectionTooltip();
             }
         });
+        setOnMouseEntered(event -> {
+            timelineHovered = true;
+            setHorizontalScrollbarVisible(true);
+        });
+        setOnMouseExited(event -> {
+            timelineHovered = false;
+            setHorizontalScrollbarVisible(false);
+        });
 
-        getChildren().addAll(headerCanvas, scrollPane);
+        emptyState.getStyleClass().add("timeline-empty-state");
+        emptyState.setManaged(false);
+        emptyState.setMouseTransparent(true);
+        emptyState.setSpacing(4);
+        emptyState.setAlignment(Pos.CENTER);
+        emptyStateIconLabel.getStyleClass().add("timeline-empty-icon");
+        emptyStateTitleLabel.getStyleClass().add("timeline-empty-title");
+        emptyStateHintLabel.getStyleClass().add("timeline-empty-hint");
+        emptyState.getChildren().addAll(emptyStateIconLabel, emptyStateTitleLabel, emptyStateHintLabel);
+
+        getChildren().addAll(headerCanvas, scrollPane, emptyState);
 
         widthProperty().addListener((obs, oldValue, newValue) -> refreshAll());
         heightProperty().addListener((obs, oldValue, newValue) -> refreshAll());
         scale.addListener((obs, oldValue, newValue) -> refreshAll());
         zoom.addListener((obs, oldValue, newValue) -> refreshAll());
+        rowZoom.addListener((obs, oldValue, newValue) -> refreshAll());
 
         scrollPane.hvalueProperty().addListener((obs, oldValue, newValue) -> drawHeader());
         scrollPane.vvalueProperty().addListener((obs, oldValue, newValue) -> drawVisibleBars());
-        scrollPane.viewportBoundsProperty().addListener((obs, oldValue, newValue) -> refreshAll());
+        scrollPane.viewportBoundsProperty().addListener((obs, oldValue, newValue) -> {
+            resolveHorizontalScrollbar();
+            refreshAll();
+        });
 
         setFocusTraversable(true);
         addEventFilter(KeyEvent.KEY_PRESSED, this::onKeyPressed);
 
         setTasks(sourceTasks);
+        Platform.runLater(this::resolveHorizontalScrollbar);
+        startCurrentTimeIndicatorUpdater();
     }
 
     public void setTasks(ObservableList<Task> tasks) {
@@ -174,6 +247,9 @@ public class GanttChartView extends Region {
         }
         sourceTasks = tasks == null ? FXCollections.observableArrayList() : tasks;
         sourceTasks.addListener(sourceTaskListener);
+        taskTrackingInitialized = false;
+        knownTaskIds.clear();
+        pendingEntryAnimationTaskIds.clear();
         refreshAll();
     }
 
@@ -199,6 +275,38 @@ public class GanttChartView extends Region {
 
     public DoubleProperty zoomProperty() {
         return zoom;
+    }
+
+    public void setRowZoom(double value) {
+        rowZoom.set(clampRowZoom(value));
+    }
+
+    public double getRowZoom() {
+        return rowZoom.get();
+    }
+
+    public DoubleProperty rowZoomProperty() {
+        return rowZoom;
+    }
+
+    public void setLocale(Locale locale) {
+        Locale normalized = locale == null ? Locale.ENGLISH : locale;
+        if (Objects.equals(uiLocale, normalized)) {
+            return;
+        }
+        uiLocale = normalized;
+        barsDirty = true;
+        refreshAll();
+    }
+
+    public void setChineseTypography(boolean enabled) {
+        if (chineseTypography == enabled) {
+            return;
+        }
+        chineseTypography = enabled;
+        refreshHeaderFontFamily();
+        barsDirty = true;
+        refreshAll();
     }
 
     public void setDarkTheme(boolean enabled) {
@@ -228,7 +336,8 @@ public class GanttChartView extends Region {
             return;
         }
         editingEnabled = enabled;
-        gridCanvas.setCursor(editingEnabled ? Cursor.CROSSHAIR : Cursor.DEFAULT);
+        interactionSurface.setCursor(editingEnabled ? Cursor.CROSSHAIR : Cursor.DEFAULT);
+        interactionSurface.setMouseTransparent(!editingEnabled);
         if (!editingEnabled) {
             clearSelectionState();
             hideDragSelectionTooltip();
@@ -237,6 +346,15 @@ public class GanttChartView extends Region {
 
     public void setSelectionTextProvider(SelectionTextProvider provider) {
         selectionTextProvider.set(provider);
+    }
+
+    public void setEmptyStateText(String title, String hint) {
+        if (title != null && !title.isBlank()) {
+            emptyStateTitleLabel.setText(title);
+        }
+        if (hint != null && !hint.isBlank()) {
+            emptyStateHintLabel.setText(hint);
+        }
     }
 
     public void setTaskColorProvider(Function<Task, String> provider) {
@@ -313,6 +431,9 @@ public class GanttChartView extends Region {
     }
 
     public void setSelectedTaskId(String taskId) {
+        if (!Objects.equals(selectedTaskId, taskId)) {
+            selectionChangeAtMillis = System.currentTimeMillis();
+        }
         selectedTaskId = taskId;
         barsDirty = true;
         drawVisibleBars();
@@ -328,6 +449,7 @@ public class GanttChartView extends Region {
             return;
         }
         selectedTaskId = taskId;
+        selectionChangeAtMillis = System.currentTimeMillis();
         barsDirty = true;
 
         Bounds viewport = scrollPane.getViewportBounds();
@@ -336,7 +458,7 @@ public class GanttChartView extends Region {
         double contentHeight = content.getHeight();
         double contentWidth = content.getWidth();
 
-        double targetY = Math.max(0, index * ROW_HEIGHT - viewportHeight / 2 + ROW_HEIGHT / 2);
+        double targetY = Math.max(0, index * rowHeight() - viewportHeight / 2 + rowHeight() / 2);
         double maxY = Math.max(0, contentHeight - viewportHeight);
         double vValue = maxY == 0 ? 0 : Math.min(1, targetY / maxY);
 
@@ -351,16 +473,25 @@ public class GanttChartView extends Region {
         drawHeader();
     }
 
+    public void scrollToTask(Task task) {
+        if (task != null) {
+            focusTask(task.id());
+        }
+    }
+
     private void refreshAll() {
         rebuildTaskOrder();
         rebuildTimelineBounds();
         relayoutContent();
         drawGrid();
+        updateTodayIndicator();
+        updateEmptyStateVisibility();
         barsDirty = true;
         lastRenderedFirstIndex = -1;
         lastRenderedLastIndex = -1;
         drawVisibleBars();
         drawHeader();
+        resolveHorizontalScrollbar();
     }
 
     private void rebuildTaskOrder() {
@@ -370,6 +501,30 @@ public class GanttChartView extends Region {
                         .thenComparing(Task::title))
                 .toList();
 
+        Set<String> currentTaskIds = new HashSet<>();
+        for (Task task : orderedTasks) {
+            currentTaskIds.add(task.id());
+        }
+
+        if (!taskTrackingInitialized) {
+            knownTaskIds.clear();
+            knownTaskIds.addAll(currentTaskIds);
+            taskTrackingInitialized = true;
+        } else {
+            List<String> addedTaskIds = new ArrayList<>();
+            for (String taskId : currentTaskIds) {
+                if (!knownTaskIds.contains(taskId)) {
+                    addedTaskIds.add(taskId);
+                }
+            }
+            if (addedTaskIds.size() <= 2) {
+                pendingEntryAnimationTaskIds.addAll(addedTaskIds);
+            }
+            knownTaskIds.clear();
+            knownTaskIds.addAll(currentTaskIds);
+        }
+        pendingEntryAnimationTaskIds.retainAll(currentTaskIds);
+
         taskIndexById.clear();
         for (int i = 0; i < orderedTasks.size(); i++) {
             taskIndexById.put(orderedTasks.get(i).id(), i);
@@ -377,39 +532,48 @@ public class GanttChartView extends Region {
     }
 
     private void rebuildTimelineBounds() {
+        LocalDate today = LocalDate.now();
         if (orderedTasks.isEmpty()) {
-            timelineStart = LocalDate.now().minusDays(7);
-            timelineEnd = LocalDate.now().plusDays(30);
+            timelineStart = today.minusDays(7);
+            timelineEnd = today.plusDays(30);
             return;
         }
-        LocalDate minStart = orderedTasks.stream().map(Task::startDate).min(LocalDate::compareTo).orElse(LocalDate.now());
-        LocalDate maxDue = orderedTasks.stream().map(Task::dueDate).max(LocalDate::compareTo).orElse(LocalDate.now().plusDays(30));
-        timelineStart = minStart.minusDays(5);
-        timelineEnd = maxDue.plusDays(12);
+        LocalDate minStart = orderedTasks.stream().map(Task::startDate).min(LocalDate::compareTo).orElse(today);
+        LocalDate maxDue = orderedTasks.stream().map(Task::dueDate).max(LocalDate::compareTo).orElse(today.plusDays(30));
+        timelineStart = minStart.minusDays(5).isBefore(today.minusDays(6)) ? minStart.minusDays(5) : today.minusDays(6);
+        timelineEnd = maxDue.plusDays(12).isAfter(today.plusDays(12)) ? maxDue.plusDays(12) : today.plusDays(12);
     }
 
     private void relayoutContent() {
         double totalDays = ChronoUnit.DAYS.between(timelineStart, timelineEnd) + 1;
         double width = Math.max(getWidth(), totalDays * dayWidth());
-        double height = Math.max(scrollPane.getViewportBounds().getHeight(), orderedTasks.size() * ROW_HEIGHT);
+        double height = Math.max(scrollPane.getViewportBounds().getHeight(), Math.max(1, orderedTasks.size()) * rowHeight());
 
         content.setPrefSize(width, height);
         content.setMinSize(width, height);
+        backgroundGridLayer.setPrefSize(width, height);
+        taskLayer.setPrefSize(width, height);
+        dependencyLayer.setPrefSize(width, height);
+        todayIndicatorLayer.setPrefSize(width, height);
+        selectionLayer.setPrefSize(width, height);
 
         gridCanvas.setWidth(width);
         gridCanvas.setHeight(height);
+        interactionSurface.setWidth(width);
+        interactionSurface.setHeight(height);
+        updateSelectionOverlayBounds();
     }
 
     private void drawGrid() {
         GraphicsContext gc = gridCanvas.getGraphicsContext2D();
-        gc.setFill(darkTheme ? Color.web("#111C2E") : Color.web("#FAFBFE"));
+        gc.setFill(darkTheme ? Color.web("#0E192B") : Color.web("#EEF2F8"));
         gc.fillRect(0, 0, gridCanvas.getWidth(), gridCanvas.getHeight());
 
-        gc.setStroke(darkTheme ? Color.web("#273247") : Color.web("#E2E7F1"));
+        gc.setStroke(darkTheme ? Color.web("#2B3951") : Color.web("#D3DCEB"));
         gc.setLineWidth(1);
 
         for (int i = 0; i <= orderedTasks.size(); i++) {
-            double y = i * ROW_HEIGHT;
+            double y = i * rowHeight();
             gc.strokeLine(0, y, gridCanvas.getWidth(), y);
         }
 
@@ -418,13 +582,16 @@ public class GanttChartView extends Region {
 
     private void drawVerticalGridLines(GraphicsContext gc) {
         switch (scale.get()) {
+            case HOUR -> drawHourGridLines(gc);
             case DAY -> {
                 LocalDate cursor = timelineStart;
                 while (!cursor.isAfter(timelineEnd)) {
                     double x = xForDate(cursor);
-                    gc.setStroke(cursor.getDayOfMonth() == 1
-                            ? (darkTheme ? Color.web("#3B4A67") : Color.web("#CBD5E6"))
-                            : (darkTheme ? Color.web("#253147") : Color.web("#EEF1F7")));
+                    boolean monthStart = cursor.getDayOfMonth() == 1;
+                    gc.setLineWidth(monthStart ? 1.35 : 1.0);
+                    gc.setStroke(monthStart
+                            ? (darkTheme ? Color.web("#4A5F82") : Color.web("#BAC9E1"))
+                            : (darkTheme ? Color.web("#2A3A53") : Color.web("#DEE6F4")));
                     gc.strokeLine(x, 0, x, gridCanvas.getHeight());
                     cursor = cursor.plusDays(1);
                 }
@@ -434,18 +601,20 @@ public class GanttChartView extends Region {
                 if (cursor.isAfter(timelineStart)) {
                     cursor = cursor.minusWeeks(1);
                 }
+                gc.setLineWidth(1.5);
                 while (!cursor.isAfter(timelineEnd)) {
                     double x = xForDate(cursor);
-                    gc.setStroke(darkTheme ? Color.web("#32405A") : Color.web("#D7DFEC"));
+                    gc.setStroke(darkTheme ? Color.web("#516382") : Color.web("#B3C0D8"));
                     gc.strokeLine(x, 0, x, gridCanvas.getHeight());
                     cursor = cursor.plusWeeks(1);
                 }
             }
             case MONTH -> {
                 LocalDate cursor = timelineStart.withDayOfMonth(1);
+                gc.setLineWidth(1.35);
                 while (!cursor.isAfter(timelineEnd)) {
                     double x = xForDate(cursor);
-                    gc.setStroke(darkTheme ? Color.web("#32405A") : Color.web("#D7DFEC"));
+                    gc.setStroke(darkTheme ? Color.web("#50617F") : Color.web("#B7C4DB"));
                     gc.strokeLine(x, 0, x, gridCanvas.getHeight());
                     cursor = cursor.plusMonths(1).withDayOfMonth(1);
                 }
@@ -455,13 +624,38 @@ public class GanttChartView extends Region {
                 if (cursor.isAfter(timelineStart)) {
                     cursor = cursor.minusYears(1);
                 }
+                gc.setLineWidth(1.4);
                 while (!cursor.isAfter(timelineEnd)) {
                     double x = xForDate(cursor);
-                    gc.setStroke(darkTheme ? Color.web("#3B4A67") : Color.web("#C9D4E8"));
+                    gc.setStroke(darkTheme ? Color.web("#506180") : Color.web("#B3C2DB"));
                     gc.strokeLine(x, 0, x, gridCanvas.getHeight());
                     cursor = cursor.plusYears(1).withDayOfYear(1);
                 }
             }
+        }
+    }
+
+    private void drawHourGridLines(GraphicsContext gc) {
+        double pixelsPerHour = Math.max(0.0001, dayWidth() / HOURS_PER_DAY);
+        double xOffset = horizontalOffset();
+        double viewportWidth = Math.max(0, scrollPane.getViewportBounds().getWidth());
+        double visibleStartX = Math.max(0, xOffset - (pixelsPerHour * 3));
+        double visibleEndX = Math.min(gridCanvas.getWidth(), xOffset + viewportWidth + (pixelsPerHour * 3));
+
+        long totalHours = Math.max(0, ChronoUnit.HOURS.between(timelineStart.atStartOfDay(), timelineEnd.plusDays(1).atStartOfDay()));
+        long firstHour = Math.max(0, (long) Math.floor(visibleStartX / pixelsPerHour));
+        long lastHour = Math.min(totalHours, (long) Math.ceil(visibleEndX / pixelsPerHour));
+
+        LocalDateTime cursor = timelineStart.atStartOfDay().plusHours(firstHour);
+        for (long hourIndex = firstHour; hourIndex <= lastHour; hourIndex++) {
+            double x = hourIndex * pixelsPerHour;
+            boolean dayBoundary = cursor.getHour() == 0;
+            gc.setLineWidth(dayBoundary ? 1.35 : 0.85);
+            gc.setStroke(dayBoundary
+                    ? (darkTheme ? Color.web("#4A5F82") : Color.web("#B4C3DD"))
+                    : (darkTheme ? Color.web("#2A3A53") : Color.web("#DFE6F3")));
+            gc.strokeLine(x, 0, x, gridCanvas.getHeight());
+            cursor = cursor.plusHours(1);
         }
     }
 
@@ -472,16 +666,17 @@ public class GanttChartView extends Region {
         headerCanvas.setHeight(height);
 
         GraphicsContext gc = headerCanvas.getGraphicsContext2D();
-        gc.setFill(darkTheme ? Color.web("#0F172A") : Color.web("#F3F6FD"));
+        gc.setFill(darkTheme ? Color.web("#101B30") : Color.web("#E7EEF9"));
         gc.fillRect(0, 0, width, height);
-        gc.setStroke(darkTheme ? Color.web("#2C3A56") : Color.web("#D7DFEC"));
+        gc.setStroke(darkTheme ? Color.web("#3A4B68") : Color.web("#B7C5DE"));
         gc.strokeLine(0, height - 1, width, height - 1);
 
         double xOffset = horizontalOffset();
-        gc.setFont(Font.font("Inter", FontWeight.SEMI_BOLD, 11));
-        gc.setFill(darkTheme ? Color.web("#E5E7EB") : Color.web("#425071"));
+        gc.setFont(headerPrimaryFont());
+        gc.setFill(headerPrimaryColor());
 
         switch (scale.get()) {
+            case HOUR -> drawHourHeader(gc, width, xOffset);
             case DAY -> drawDayHeader(gc, width, xOffset);
             case WEEK -> drawWeekHeader(gc, width, xOffset);
             case MONTH -> drawMonthHeader(gc, width, xOffset);
@@ -489,21 +684,54 @@ public class GanttChartView extends Region {
         }
     }
 
+    private void drawHourHeader(GraphicsContext gc, double width, double xOffset) {
+        double pixelsPerHour = Math.max(0.0001, dayWidth() / HOURS_PER_DAY);
+        double textY = 21;
+        int labelStepHours = pixelsPerHour >= 44 ? 1
+                : pixelsPerHour >= 26 ? 2
+                : pixelsPerHour >= 16 ? 3
+                : pixelsPerHour >= 11 ? 4
+                : pixelsPerHour >= 8 ? 6 : 12;
+
+        long totalHours = Math.max(0, ChronoUnit.HOURS.between(timelineStart.atStartOfDay(), timelineEnd.plusDays(1).atStartOfDay()));
+        long firstHour = Math.max(0, (long) Math.floor(Math.max(0, xOffset - (pixelsPerHour * 2)) / pixelsPerHour));
+        long lastHour = Math.min(totalHours, (long) Math.ceil((xOffset + width + (pixelsPerHour * 2)) / pixelsPerHour));
+
+        LocalDateTime cursor = timelineStart.atStartOfDay().plusHours(firstHour);
+        for (long hourIndex = firstHour; hourIndex <= lastHour; hourIndex++) {
+            double x = (hourIndex * pixelsPerHour) - xOffset;
+            if (x < -140 || x > width + 24) {
+                cursor = cursor.plusHours(1);
+                continue;
+            }
+
+            gc.strokeLine(x, 0, x, HEADER_HEIGHT);
+            if (cursor.getHour() == 0) {
+                drawDateWithWeekdayLabel(gc, cursor.toLocalDate(), x + 4, textY);
+            } else if (cursor.getHour() % labelStepHours == 0) {
+                gc.setFont(headerSecondaryFont());
+                gc.setFill(headerSecondaryColor());
+                gc.fillText(String.format(uiLocale, "%02d:00", cursor.getHour()), x + 4, textY);
+            }
+            cursor = cursor.plusHours(1);
+        }
+    }
+
     private void drawDayHeader(GraphicsContext gc, double width, double xOffset) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d");
+        double textY = 21;
         LocalDate cursor = timelineStart;
         while (!cursor.isAfter(timelineEnd)) {
             double x = xForDate(cursor) - xOffset;
             if (x > -90 && x < width + 20) {
                 gc.strokeLine(x, 0, x, HEADER_HEIGHT);
-                gc.fillText(formatter.format(cursor), x + 4, 22);
+                drawDateWithWeekdayLabel(gc, cursor, x + 4, textY);
             }
             cursor = cursor.plusDays(1);
         }
     }
 
     private void drawWeekHeader(GraphicsContext gc, double width, double xOffset) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d");
+        double textY = 21;
         LocalDate cursor = timelineStart.with(DayOfWeek.MONDAY);
         if (cursor.isAfter(timelineStart)) {
             cursor = cursor.minusWeeks(1);
@@ -513,29 +741,37 @@ public class GanttChartView extends Region {
             double x = xForDate(cursor) - xOffset;
             if (x > -120 && x < width + 20) {
                 gc.strokeLine(x, 0, x, HEADER_HEIGHT);
-                gc.fillText("Week " + cursor.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR)
-                        + " (" + formatter.format(cursor) + ")", x + 4, 22);
+                String weekPrefix = "W" + cursor.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR) + " · ";
+                gc.setFont(headerPrimaryFont());
+                gc.setFill(headerPrimaryColor());
+                gc.fillText(weekPrefix, x + 5, textY);
+
+                double prefixWidth = measureTextWidth(weekPrefix, headerPrimaryFont());
+                drawDateWithWeekdayLabel(gc, cursor, x + 5 + prefixWidth, textY);
             }
             cursor = cursor.plusWeeks(1);
         }
     }
 
     private void drawMonthHeader(GraphicsContext gc, double width, double xOffset) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM yyyy");
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM yyyy", uiLocale);
         LocalDate cursor = timelineStart.withDayOfMonth(1);
         while (!cursor.isAfter(timelineEnd)) {
             double x = xForDate(cursor) - xOffset;
             if (x > -120 && x < width + 20) {
                 gc.strokeLine(x, 0, x, HEADER_HEIGHT);
-                gc.fillText(formatter.format(cursor), x + 4, 22);
+                gc.setFont(headerPrimaryFont());
+                gc.setFill(headerPrimaryColor());
+                gc.fillText(formatter.format(cursor), x + 4, 21);
             }
             cursor = cursor.plusMonths(1).withDayOfMonth(1);
         }
     }
 
     private void drawYearHeader(GraphicsContext gc, double width, double xOffset) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy");
-        gc.setFont(Font.font("Inter", FontWeight.BOLD, 12));
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy", uiLocale);
+        gc.setFont(headerYearFont());
+        gc.setFill(headerPrimaryColor());
         LocalDate cursor = timelineStart.withDayOfYear(1);
         if (cursor.isAfter(timelineStart)) {
             cursor = cursor.minusYears(1);
@@ -544,14 +780,68 @@ public class GanttChartView extends Region {
             double x = xForDate(cursor) - xOffset;
             if (x > -100 && x < width + 20) {
                 gc.strokeLine(x, 0, x, HEADER_HEIGHT);
-                gc.fillText(formatter.format(cursor), x + 6, 24);
+                gc.fillText(formatter.format(cursor), x + 6, 22);
             }
             cursor = cursor.plusYears(1).withDayOfYear(1);
         }
     }
 
+    private void drawDateWithWeekdayLabel(GraphicsContext gc, LocalDate date, double x, double baselineY) {
+        String dateLabel = formatHeaderDateLabel(date);
+        String weekdayLabel = " · " + formatHeaderWeekdayLabel(date);
+
+        Font primary = headerPrimaryFont();
+        Font secondary = headerSecondaryFont();
+
+        gc.setFont(primary);
+        gc.setFill(headerPrimaryColor());
+        gc.fillText(dateLabel, x, baselineY);
+
+        gc.setFont(secondary);
+        gc.setFill(headerSecondaryColor());
+        gc.fillText(weekdayLabel, x + measureTextWidth(dateLabel, primary) + 2, baselineY);
+    }
+
+    private String formatHeaderDateLabel(LocalDate date) {
+        if (Locale.SIMPLIFIED_CHINESE.getLanguage().equals(uiLocale.getLanguage())) {
+            return DateTimeFormatter.ofPattern("M月d日", uiLocale).format(date);
+        }
+        return DateTimeFormatter.ofPattern("MMM d", uiLocale).format(date);
+    }
+
+    private String formatHeaderWeekdayLabel(LocalDate date) {
+        return DateTimeFormatter.ofPattern("EEE", uiLocale).format(date);
+    }
+
+    private Font headerPrimaryFont() {
+        return Font.font(headerFontFamily, FontWeight.SEMI_BOLD, 12);
+    }
+
+    private Font headerSecondaryFont() {
+        return Font.font(headerFontFamily, FontWeight.MEDIUM, 10);
+    }
+
+    private Font headerYearFont() {
+        return Font.font(headerFontFamily, FontWeight.BOLD, 12);
+    }
+
+    private Color headerPrimaryColor() {
+        return darkTheme ? Color.web("#F1F5F9") : Color.web("#2F3E5E");
+    }
+
+    private Color headerSecondaryColor() {
+        return darkTheme ? Color.web("#A9BAD5") : Color.web("#6A7894");
+    }
+
+    private double measureTextWidth(String text, Font font) {
+        Text probe = new Text(text);
+        probe.setFont(font);
+        return probe.getLayoutBounds().getWidth();
+    }
+
     private void drawVisibleBars() {
         debugDrag("drawVisibleBars");
+        updateEmptyStateVisibility();
         if (orderedTasks.isEmpty()) {
             if (!taskBarsLayer.getChildren().isEmpty()) {
                 taskBarsLayer.getChildren().clear();
@@ -566,12 +856,12 @@ public class GanttChartView extends Region {
         }
 
         Bounds viewport = scrollPane.getViewportBounds();
-        double viewportHeight = Math.max(ROW_HEIGHT, viewport.getHeight());
+        double viewportHeight = Math.max(rowHeight(), viewport.getHeight());
         double contentHeight = Math.max(viewportHeight, content.getHeight());
         double yOffset = Math.max(0, (contentHeight - viewportHeight) * scrollPane.getVvalue());
 
-        int firstIndex = Math.max(0, (int) Math.floor(yOffset / ROW_HEIGHT) - 1);
-        int lastIndex = Math.min(orderedTasks.size() - 1, (int) Math.ceil((yOffset + viewportHeight) / ROW_HEIGHT) + 1);
+        int firstIndex = Math.max(0, (int) Math.floor(yOffset / rowHeight()) - 1);
+        int lastIndex = Math.min(orderedTasks.size() - 1, (int) Math.ceil((yOffset + viewportHeight) / rowHeight()) + 1);
 
         boolean visibleRangeChanged = firstIndex != lastRenderedFirstIndex || lastIndex != lastRenderedLastIndex;
         if (!barsDirty && !visibleRangeChanged) {
@@ -597,18 +887,41 @@ public class GanttChartView extends Region {
     }
 
     private double dayWidth() {
-        double clampedZoom = Math.max(0.5, Math.min(zoom.get(), 3.0));
+        double clampedZoom = Math.max(MIN_HORIZONTAL_ZOOM, Math.min(zoom.get(), MAX_HORIZONTAL_ZOOM));
         // Keep date->x mapping linear by days and adjust pixels/day per active scale.
         return switch (scale.get()) {
-            case DAY -> 30 * clampedZoom;
-            case WEEK -> 14 * clampedZoom;
-            case MONTH -> 4.2 * clampedZoom;
-            case YEAR -> 0.38 * clampedZoom;
+            case HOUR -> 384 * clampedZoom;
+            case DAY -> 27 * clampedZoom;
+            case WEEK -> 12.2 * clampedZoom;
+            case MONTH -> 3.8 * clampedZoom;
+            case YEAR -> 0.34 * clampedZoom;
         };
+    }
+
+    private double rowHeight() {
+        return BASE_ROW_HEIGHT * clampRowZoom(rowZoom.get());
+    }
+
+    private double barVerticalPadding() {
+        return BASE_BAR_VERTICAL_PADDING * Math.max(0.82, clampRowZoom(rowZoom.get()));
+    }
+
+    private double clampRowZoom(double value) {
+        return Math.max(MIN_ROW_ZOOM, Math.min(MAX_ROW_ZOOM, value));
     }
 
     private double xForDate(LocalDate date) {
         return ChronoUnit.DAYS.between(timelineStart, date) * dayWidth();
+    }
+
+    private double xForDateTime(LocalDateTime dateTime) {
+        LocalDateTime timelineStartDateTime = timelineStart.atStartOfDay();
+        long wholeDays = ChronoUnit.DAYS.between(timelineStartDateTime.toLocalDate(), dateTime.toLocalDate());
+        double fractionalDay = (dateTime.getHour() / HOURS_PER_DAY)
+                + (dateTime.getMinute() / (60.0 * HOURS_PER_DAY))
+                + (dateTime.getSecond() / (3600.0 * HOURS_PER_DAY))
+                + (dateTime.getNano() / (3_600_000_000_000.0 * HOURS_PER_DAY));
+        return (wholeDays + fractionalDay) * dayWidth();
     }
 
     private double widthForTask(Task task) {
@@ -630,6 +943,80 @@ public class GanttChartView extends Region {
         }
     }
 
+    private void resolveHorizontalScrollbar() {
+        Node candidate = scrollPane.lookup(".scroll-bar:horizontal");
+        if (!(candidate instanceof ScrollBar scrollBar)) {
+            return;
+        }
+        if (horizontalScrollBar == scrollBar) {
+            return;
+        }
+        horizontalScrollBar = scrollBar;
+        horizontalScrollBar.setOpacity(timelineHovered ? 1.0 : 0.0);
+        horizontalScrollBar.setMouseTransparent(!timelineHovered);
+    }
+
+    private void setHorizontalScrollbarVisible(boolean visible) {
+        resolveHorizontalScrollbar();
+        if (horizontalScrollBar == null) {
+            return;
+        }
+        if (horizontalScrollbarFade != null) {
+            horizontalScrollbarFade.stop();
+        }
+        horizontalScrollbarFade = new FadeTransition(HORIZONTAL_SCROLLBAR_FADE_DURATION, horizontalScrollBar);
+        horizontalScrollbarFade.setToValue(visible ? 1.0 : 0.0);
+        horizontalScrollBar.setMouseTransparent(!visible);
+        horizontalScrollbarFade.playFromStart();
+    }
+
+    private void startCurrentTimeIndicatorUpdater() {
+        if (currentTimeIndicatorRefreshTimeline != null) {
+            currentTimeIndicatorRefreshTimeline.stop();
+        }
+        currentTimeIndicatorRefreshTimeline = new Timeline(
+                new KeyFrame(Duration.ZERO, event -> updateTodayIndicator()),
+                new KeyFrame(CURRENT_TIME_INDICATOR_REFRESH_INTERVAL)
+        );
+        currentTimeIndicatorRefreshTimeline.setCycleCount(Timeline.INDEFINITE);
+        currentTimeIndicatorRefreshTimeline.play();
+    }
+
+    private void refreshHeaderFontFamily() {
+        if (chineseTypography) {
+            headerFontFamily = pickAvailableFontFamily(
+                    "PingFang SC",
+                    "HarmonyOS Sans SC",
+                    "Noto Sans SC",
+                    "Microsoft YaHei UI",
+                    "Microsoft YaHei",
+                    "Segoe UI"
+            );
+            return;
+        }
+        headerFontFamily = pickAvailableFontFamily(
+                "Inter",
+                "SF Pro Text",
+                "Segoe UI",
+                "Helvetica Neue",
+                "Arial"
+        );
+    }
+
+    private String pickAvailableFontFamily(String... candidates) {
+        List<String> installedFonts = Font.getFamilies();
+        for (String candidate : candidates) {
+            if (installedFonts.contains(candidate)) {
+                return candidate;
+            }
+        }
+        return Font.getDefault().getFamily();
+    }
+
+    private boolean isSelectionRecentlyChanged() {
+        return System.currentTimeMillis() - selectionChangeAtMillis <= SELECTION_ANIMATION_WINDOW_MILLIS;
+    }
+
     @Override
     protected void layoutChildren() {
         double width = getWidth();
@@ -639,8 +1026,10 @@ public class GanttChartView extends Region {
         scrollPane.resizeRelocate(0, HEADER_HEIGHT, width, Math.max(0, height - HEADER_HEIGHT));
         relayoutContent();
         drawGrid();
+        updateTodayIndicator();
         drawVisibleBars();
         drawHeader();
+        layoutEmptyState(width, height);
     }
 
     @Override
@@ -653,6 +1042,31 @@ public class GanttChartView extends Region {
         return 640;
     }
 
+    private void updateTodayIndicator() {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDate today = now.toLocalDate();
+        boolean visible = !today.isBefore(timelineStart) && !today.isAfter(timelineEnd);
+        double x = xForDateTime(now);
+        double height = Math.max(rowHeight(), gridCanvas.getHeight());
+        todayIndicatorLayer.updateLine(x, height, visible, darkTheme);
+    }
+
+    private void updateEmptyStateVisibility() {
+        emptyState.setVisible(orderedTasks.isEmpty());
+    }
+
+    private void layoutEmptyState(double width, double height) {
+        if (!emptyState.isVisible()) {
+            return;
+        }
+        double bodyHeight = Math.max(0, height - HEADER_HEIGHT);
+        double contentWidth = Math.min(360, Math.max(240, width - 48));
+        double contentHeight = emptyState.prefHeight(contentWidth);
+        double x = (width - contentWidth) / 2.0;
+        double y = HEADER_HEIGHT + Math.max(0, (bodyHeight - contentHeight) / 2.0) - 10;
+        emptyState.resizeRelocate(x, y, contentWidth, contentHeight);
+    }
+
     private final class TaskBar extends Pane {
         private final Task task;
         private final int rowIndex;
@@ -662,8 +1076,10 @@ public class GanttChartView extends Region {
         private final Rectangle leftHandle = new Rectangle();
         private final Rectangle rightHandle = new Rectangle();
         private final Rectangle criticalOutline = new Rectangle();
-        private final javafx.scene.control.Label label = new javafx.scene.control.Label();
-        private final javafx.scene.control.Label badge = new javafx.scene.control.Label("!");
+        private final Label label = new Label();
+        private final Label badge = new Label("!");
+        private final DropShadow hoverShadow = new DropShadow();
+        private final DropShadow selectionShadow = new DropShadow();
         private Tooltip tooltip;
 
         private LocalDate initialStart;
@@ -672,6 +1088,8 @@ public class GanttChartView extends Region {
         private LocalDate previewDue;
         private double dragAnchorSceneX;
         private DragMode dragMode = DragMode.NONE;
+        private boolean hovered;
+        private boolean selectionAnimationPlayed;
 
         private TaskBar(Task task, int rowIndex) {
             this.task = task;
@@ -683,15 +1101,15 @@ public class GanttChartView extends Region {
 
             setManaged(false);
 
-            base.setArcWidth(10);
-            base.setArcHeight(10);
-            accent.setArcWidth(10);
-            accent.setArcHeight(10);
-            criticalOutline.setArcWidth(10);
-            criticalOutline.setArcHeight(10);
+            base.setArcWidth(8);
+            base.setArcHeight(8);
+            accent.setArcWidth(8);
+            accent.setArcHeight(8);
+            criticalOutline.setArcWidth(8);
+            criticalOutline.setArcHeight(8);
             criticalOutline.setFill(Color.TRANSPARENT);
-            criticalOutline.setStroke(Color.web("#7E59D9"));
-            criticalOutline.setStrokeWidth(2);
+            criticalOutline.setStroke(Color.web("#8B5CF6", 0.95));
+            criticalOutline.setStrokeWidth(1.8);
 
             leftHandle.setWidth(HANDLE_WIDTH);
             rightHandle.setWidth(HANDLE_WIDTH);
@@ -706,9 +1124,23 @@ public class GanttChartView extends Region {
             getChildren().addAll(criticalOutline, base, accent, leftHandle, rightHandle, label, badge);
             updateVisual(previewStart, previewDue);
             wireEvents();
+            if (pendingEntryAnimationTaskIds.remove(task.id())) {
+                playEntryAnimation();
+            }
         }
 
         private void wireEvents() {
+            setOnMouseEntered(event -> {
+                hovered = true;
+                updateVisual(previewStart, previewDue);
+            });
+
+            setOnMouseExited(event -> {
+                hovered = false;
+                setCursor(Cursor.DEFAULT);
+                updateVisual(previewStart, previewDue);
+            });
+
             setOnMouseMoved(event -> {
                 if (!editingEnabled) {
                     setCursor(Cursor.HAND);
@@ -802,9 +1234,9 @@ public class GanttChartView extends Region {
 
         private void updateVisual(LocalDate startDate, LocalDate dueDate) {
             double x = xForDate(startDate);
-            double y = rowIndex * ROW_HEIGHT + BAR_VERTICAL_PADDING;
+            double y = rowIndex * rowHeight() + barVerticalPadding();
             double width = Math.max(MIN_VISIBLE_BAR_WIDTH, (ChronoUnit.DAYS.between(startDate, dueDate) + 1) * dayWidth());
-            double height = ROW_HEIGHT - (2 * BAR_VERTICAL_PADDING);
+            double height = rowHeight() - (2 * barVerticalPadding());
 
             relocate(x, y);
             setPrefSize(width, height);
@@ -842,16 +1274,38 @@ public class GanttChartView extends Region {
 
             String conflictMessage = conflictMessageByTaskId.get(task.id());
             boolean hasConflict = conflictMessage != null && !conflictMessage.isBlank();
-
-            if (Objects.equals(selectedTaskId, task.id())) {
-                base.setStroke(darkTheme ? Color.web("#93C5FD") : Color.web("#0D1A36"));
-                base.setStrokeWidth(2);
+            boolean selected = Objects.equals(selectedTaskId, task.id());
+            if (selected) {
+                base.setStroke(darkTheme ? Color.web("#CFE2FF") : Color.web("#1D4ED8"));
+                base.setStrokeWidth(2.2);
+                selectionShadow.setRadius(9);
+                selectionShadow.setSpread(0.12);
+                selectionShadow.setOffsetY(1.4);
+                selectionShadow.setColor(darkTheme ? Color.web("#60A5FA", 0.5) : Color.web("#2563EB", 0.34));
+                setEffect(selectionShadow);
+                if (isSelectionRecentlyChanged() && !selectionAnimationPlayed) {
+                    playSelectionAnimation();
+                    selectionAnimationPlayed = true;
+                }
             } else if (hasConflict) {
                 base.setStroke(Color.web("#C73636"));
                 base.setStrokeWidth(2);
+                setEffect(null);
+                selectionAnimationPlayed = false;
+            } else if (hovered) {
+                base.setStroke(darkTheme ? Color.web("#DAE4F4", 0.58) : Color.web("#334155", 0.28));
+                base.setStrokeWidth(1.5);
+                hoverShadow.setRadius(5);
+                hoverShadow.setOffsetY(1);
+                hoverShadow.setSpread(0.04);
+                hoverShadow.setColor(darkTheme ? Color.web("#94A3B8", 0.28) : Color.web("#0F172A", 0.16));
+                setEffect(hoverShadow);
+                selectionAnimationPlayed = false;
             } else {
                 base.setStroke(darkTheme ? Color.color(1, 1, 1, 0.22) : Color.color(0, 0, 0, 0.16));
                 base.setStrokeWidth(1);
+                setEffect(null);
+                selectionAnimationPlayed = false;
             }
 
             boolean showHandles = editingEnabled;
@@ -869,13 +1323,13 @@ public class GanttChartView extends Region {
             badge.setVisible(showBadgeVisual);
             if (showBadgeVisual) {
                 badge.setLayoutX(Math.max(0, width - 16));
-                badge.setLayoutY(2);
+                badge.setLayoutY(1);
             }
 
             label.setText(compactLabel(task, width, showBadgeVisual));
             label.setVisible(width >= 36);
             label.setLayoutX(8);
-            label.setLayoutY(Math.max(4, (height - 14) / 2));
+            label.setLayoutY(Math.max(3, (height - 14) / 2));
             label.setMaxWidth(Math.max(18, width - (showBadgeVisual ? 26 : 12)));
 
             StringBuilder tooltipText = new StringBuilder();
@@ -904,6 +1358,34 @@ public class GanttChartView extends Region {
                 }
                 tooltip.setText(tooltipText.toString());
             }
+        }
+
+        private void playEntryAnimation() {
+            setOpacity(0.0);
+            setTranslateY(6.0);
+
+            FadeTransition fade = new FadeTransition(Duration.millis(120), this);
+            fade.setFromValue(0.0);
+            fade.setToValue(1.0);
+            fade.setInterpolator(Interpolator.EASE_OUT);
+
+            TranslateTransition slide = new TranslateTransition(Duration.millis(120), this);
+            slide.setFromY(6.0);
+            slide.setToY(0.0);
+            slide.setInterpolator(Interpolator.EASE_OUT);
+
+            fade.play();
+            slide.play();
+        }
+
+        private void playSelectionAnimation() {
+            ScaleTransition scaleTransition = new ScaleTransition(Duration.millis(160), this);
+            scaleTransition.setFromX(0.985);
+            scaleTransition.setFromY(0.985);
+            scaleTransition.setToX(1.0);
+            scaleTransition.setToY(1.0);
+            scaleTransition.setInterpolator(Interpolator.EASE_OUT);
+            scaleTransition.playFromStart();
         }
 
         private void appendTooltipLine(StringBuilder builder, String line) {
@@ -1032,20 +1514,20 @@ public class GanttChartView extends Region {
             return;
         }
         sceneDragCaptureHandler = event -> {
-            if (!dragSelection.active || event.getTarget() == gridCanvas) {
+            if (!dragSelection.active || event.getTarget() == interactionSurface) {
                 return;
             }
-            Point2D local = gridCanvas.sceneToLocal(event.getSceneX(), event.getSceneY());
+            Point2D local = interactionSurface.sceneToLocal(event.getSceneX(), event.getSceneY());
             dragSelection.pendingUnitStart = snapDateToScale(mouseXToDate(local.getX()));
             dragSelection.cursorScreenX = event.getScreenX();
             dragSelection.cursorScreenY = event.getScreenY();
             queueDragOverlayUpdate();
         };
         sceneReleaseCaptureHandler = event -> {
-            if (!dragSelection.active || event.getTarget() == gridCanvas) {
+            if (!dragSelection.active || event.getTarget() == interactionSurface) {
                 return;
             }
-            Point2D local = gridCanvas.sceneToLocal(event.getSceneX(), event.getSceneY());
+            Point2D local = interactionSurface.sceneToLocal(event.getSceneX(), event.getSceneY());
             finalizeSelectionFromMouse(local.getX(), event.getScreenX(), event.getScreenY());
         };
         scene.addEventFilter(MouseEvent.MOUSE_DRAGGED, sceneDragCaptureHandler);
@@ -1121,7 +1603,7 @@ public class GanttChartView extends Region {
         double endX = Math.max(x, xForDate(dragSelection.endDate.plusDays(1)));
         double width = Math.max(1, endX - x);
 
-        Bounds newRect = new BoundingBox(x, 0, width, Math.max(ROW_HEIGHT, gridCanvas.getHeight()));
+        Bounds newRect = new BoundingBox(x, 0, width, Math.max(rowHeight(), gridCanvas.getHeight()));
         if (dragSelection.lastRect != null
                 && dragSelection.lastRect.getMinX() == newRect.getMinX()
                 && dragSelection.lastRect.getWidth() == newRect.getWidth()
@@ -1153,7 +1635,7 @@ public class GanttChartView extends Region {
         double anchorX = dragSelection.cursorScreenX + 12;
         double anchorY = dragSelection.cursorScreenY + 12;
         if (!dragSelectionTooltip.isShowing()) {
-            dragSelectionTooltip.show(gridCanvas, anchorX, anchorY);
+            dragSelectionTooltip.show(interactionSurface, anchorX, anchorY);
         } else {
             dragSelectionTooltip.setAnchorX(anchorX);
             dragSelectionTooltip.setAnchorY(anchorY);
@@ -1192,6 +1674,7 @@ public class GanttChartView extends Region {
     private LocalDate snapDateToScale(LocalDate date) {
         // Snap mouse-selected date to unit boundaries based on current scale.
         return switch (scale.get()) {
+            case HOUR -> date;
             case DAY -> date;
             case WEEK -> date.with(DayOfWeek.MONDAY);
             case MONTH -> date.withDayOfMonth(1);
@@ -1201,6 +1684,7 @@ public class GanttChartView extends Region {
 
     private LocalDate unitEndDate(LocalDate unitStart) {
         LocalDate end = switch (scale.get()) {
+            case HOUR -> unitStart;
             case DAY -> unitStart;
             case WEEK -> unitStart.plusWeeks(1).minusDays(1);
             case MONTH -> unitStart.plusMonths(1).minusDays(1);
@@ -1224,6 +1708,101 @@ public class GanttChartView extends Region {
             return;
         }
         System.out.println(System.currentTimeMillis() + " [DragCreate][" + Thread.currentThread().getName() + "] " + message);
+    }
+
+    private static final class BackgroundGridLayer extends Pane {
+        private BackgroundGridLayer(Canvas canvas) {
+            setMouseTransparent(true);
+            setPickOnBounds(false);
+            getChildren().add(canvas);
+        }
+    }
+
+    private static final class TaskLayer extends Pane {
+        private TaskLayer(Pane bars) {
+            setPickOnBounds(false);
+            getChildren().add(bars);
+        }
+    }
+
+    private static final class DependencyLayer extends Pane {
+        private DependencyLayer() {
+            setMouseTransparent(true);
+            setPickOnBounds(false);
+        }
+    }
+
+    private static final class SelectionLayer extends Pane {
+        private SelectionLayer() {
+            setPickOnBounds(false);
+        }
+    }
+
+    private static final class TodayIndicatorLayer extends Pane {
+        private final Line glowLine = new Line();
+        private final Line coreLine = new Line();
+        private Timeline movementTimeline;
+        private double currentX = Double.NaN;
+
+        private TodayIndicatorLayer() {
+            setMouseTransparent(true);
+            setPickOnBounds(false);
+            glowLine.setStrokeWidth(3.0);
+            coreLine.setStrokeWidth(1.2);
+            getChildren().addAll(glowLine, coreLine);
+        }
+
+        private void updateLine(double x, double height, boolean visible, boolean darkTheme) {
+            if (!visible) {
+                if (movementTimeline != null) {
+                    movementTimeline.stop();
+                }
+                currentX = Double.NaN;
+                glowLine.setVisible(false);
+                coreLine.setVisible(false);
+                return;
+            }
+            Color core = darkTheme ? Color.web("#FB7185") : Color.web("#E11D48");
+            Color glow = darkTheme ? Color.web("#FB7185", 0.36) : Color.web("#F43F5E", 0.28);
+
+            glowLine.setStroke(glow);
+            coreLine.setStroke(core);
+            glowLine.setStartY(0);
+            glowLine.setEndY(height);
+            coreLine.setStartY(0);
+            coreLine.setEndY(height);
+            glowLine.setVisible(true);
+            coreLine.setVisible(true);
+
+            if (Double.isNaN(currentX)) {
+                currentX = x;
+                glowLine.setStartX(x);
+                glowLine.setEndX(x);
+                coreLine.setStartX(x);
+                coreLine.setEndX(x);
+                return;
+            }
+
+            if (movementTimeline != null) {
+                movementTimeline.stop();
+            }
+            movementTimeline = new Timeline(
+                    new KeyFrame(Duration.ZERO,
+                            new KeyValue(glowLine.startXProperty(), glowLine.getStartX()),
+                            new KeyValue(glowLine.endXProperty(), glowLine.getEndX()),
+                            new KeyValue(coreLine.startXProperty(), coreLine.getStartX()),
+                            new KeyValue(coreLine.endXProperty(), coreLine.getEndX())
+                    ),
+                    new KeyFrame(Duration.millis(220),
+                            new KeyValue(glowLine.startXProperty(), x, Interpolator.EASE_BOTH),
+                            new KeyValue(glowLine.endXProperty(), x, Interpolator.EASE_BOTH),
+                            new KeyValue(coreLine.startXProperty(), x, Interpolator.EASE_BOTH),
+                            new KeyValue(coreLine.endXProperty(), x, Interpolator.EASE_BOTH)
+                    )
+            );
+            currentX = x;
+            movementTimeline.playFromStart();
+        }
     }
 
     private static final class DragSelectionState {

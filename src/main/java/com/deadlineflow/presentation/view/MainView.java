@@ -8,17 +8,18 @@ import com.deadlineflow.domain.model.TimeScale;
 import com.deadlineflow.presentation.components.GanttChartView;
 import com.deadlineflow.presentation.theme.StatusColorManager;
 import com.deadlineflow.presentation.theme.ThemeManager;
-import com.deadlineflow.presentation.view.sections.BoardSummaryView;
 import com.deadlineflow.presentation.view.sections.ProjectsSidebarView;
 import com.deadlineflow.presentation.view.sections.TaskInspectorView;
 import com.deadlineflow.presentation.view.sections.TopBarView;
 import com.deadlineflow.presentation.viewmodel.LanguageManager;
 import com.deadlineflow.presentation.viewmodel.MainViewModel;
-import javafx.animation.FadeTransition;
+import javafx.animation.Interpolator;
+import javafx.animation.KeyFrame;
+import javafx.animation.KeyValue;
+import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.collections.ListChangeListener;
-import javafx.collections.ObservableList;
 import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -36,15 +37,17 @@ import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputDialog;
-import javafx.scene.control.Toggle;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
+import javafx.scene.shape.Rectangle;
+import javafx.scene.text.Font;
 import javafx.stage.Window;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
@@ -55,10 +58,18 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainView extends BorderPane {
     private static final boolean NEW_TASK_DIALOG_DEBUG = Boolean.getBoolean("deadlineflow.debug.newtaskdialog");
+    private static final double MIN_ZOOM = 0.25;
+    private static final double MAX_ZOOM = 4.0;
+    private static final Duration PROJECTS_SIDEBAR_ANIMATION_DURATION = Duration.millis(200);
+    private static final Duration TASK_INSPECTOR_SIDEBAR_ANIMATION_DURATION = Duration.millis(200);
+    private static final String FONT_WARNING_PREFIX = "[font-warning] ";
+    private static final String FONT_WARNING_MESSAGE = FONT_WARNING_PREFIX
+            + "Chinese font missing. Install one of: Noto Sans SC / PingFang SC / Microsoft YaHei UI / HarmonyOS Sans SC.";
 
     private final MainViewModel viewModel;
     private final LanguageManager i18n;
@@ -67,16 +78,24 @@ public class MainView extends BorderPane {
 
     private final TopBarView topBarView = new TopBarView();
     private final ProjectsSidebarView projectsSidebarView = new ProjectsSidebarView();
-    private final BoardSummaryView boardSummaryView = new BoardSummaryView();
+    private final StackPane projectsSidebarHost = new StackPane(projectsSidebarView);
+    private final Rectangle projectsSidebarClip = new Rectangle();
     private final TaskInspectorView taskInspectorView = new TaskInspectorView();
+    private final StackPane taskInspectorHost = new StackPane(taskInspectorView);
+    private final Rectangle taskInspectorClip = new Rectangle();
     private final GanttChartView ganttChartView = new GanttChartView();
 
     private final VBox centerColumn = new VBox();
+    private final HBox workspaceRow = new HBox();
 
     private boolean inspectorUpdating;
     private boolean timelineCreateDialogOpen;
     private boolean ganttDerivedRefreshQueued;
-    private final boolean restrictedInteractionMode = true;
+    private boolean projectsSidebarVisible;
+    private Timeline projectsSidebarTimeline;
+    private boolean taskInspectorVisible;
+    private Timeline taskInspectorTimeline;
+    private boolean horizontalZoomSyncing;
     private String inspectorTitleText = "";
 
     public MainView(MainViewModel viewModel, LanguageManager i18n, ThemeManager themeManager) {
@@ -88,21 +107,25 @@ public class MainView extends BorderPane {
         setPadding(new Insets(14));
 
         centerColumn.getStyleClass().add("board-column");
-        centerColumn.setSpacing(12);
-        centerColumn.getChildren().addAll(boardSummaryView, buildTimelineCard());
+        centerColumn.setSpacing(0);
+        Node timelineCard = buildTimelineCard();
+        centerColumn.getChildren().add(timelineCard);
+        VBox.setVgrow(timelineCard, Priority.ALWAYS);
+
+        workspaceRow.getStyleClass().add("workspace-row");
+        workspaceRow.setSpacing(0);
+        workspaceRow.getChildren().addAll(projectsSidebarHost, centerColumn, taskInspectorHost);
+        HBox.setHgrow(centerColumn, Priority.ALWAYS);
 
         setTop(topBarView);
-        setLeft(projectsSidebarView);
-        setCenter(centerColumn);
-        setRight(taskInspectorView);
+        setCenter(workspaceRow);
 
         BorderPane.setMargin(topBarView, new Insets(0, 0, 12, 0));
-        BorderPane.setMargin(projectsSidebarView, new Insets(0, 12, 0, 0));
-        BorderPane.setMargin(taskInspectorView, new Insets(0, 0, 0, 12));
 
         configureTopBar();
         configureProjectSidebar();
-        configureSummaryBoard();
+        configureProjectsDrawer();
+        configureTaskInspectorDrawer();
         configureInspector();
         configureThemeBridge();
 
@@ -111,15 +134,19 @@ public class MainView extends BorderPane {
         wireGantt();
         wireDerivedState();
         wireLocalization();
-        applyInteractionLockdown();
         applyTranslations();
+        updateProjectActionState(viewModel.selectedProjectProperty().get());
+        refreshInspector(viewModel.selectedTaskProperty().get());
     }
 
     private Node buildTimelineCard() {
-        VBox timelineCard = new VBox(ganttChartView);
+        StackPane timelineSurface = new StackPane(ganttChartView);
+        VBox.setVgrow(timelineSurface, Priority.ALWAYS);
+
+        VBox timelineCard = new VBox(timelineSurface);
         timelineCard.getStyleClass().addAll("panel-card", "timeline-card");
         timelineCard.setPadding(new Insets(0));
-        VBox.setVgrow(ganttChartView, Priority.ALWAYS);
+        VBox.setVgrow(timelineSurface, Priority.ALWAYS);
         return timelineCard;
     }
 
@@ -136,6 +163,8 @@ public class MainView extends BorderPane {
         topBarView.dayButton().setToggleGroup(scaleGroup);
         topBarView.weekButton().setToggleGroup(scaleGroup);
         topBarView.yearButton().setToggleGroup(scaleGroup);
+        topBarView.hourButton().setDisable(true);
+        topBarView.hourButton().setFocusTraversable(false);
 
         scaleGroup.selectedToggleProperty().addListener((obs, oldValue, newValue) -> {
             if (newValue == topBarView.dayButton()) {
@@ -148,7 +177,10 @@ public class MainView extends BorderPane {
         });
 
         viewModel.scaleProperty().addListener((obs, oldValue, newValue) -> {
-            if (newValue == TimeScale.DAY) {
+            if (newValue == TimeScale.HOUR) {
+                scaleGroup.selectToggle(topBarView.weekButton());
+                Platform.runLater(() -> viewModel.scaleProperty().set(TimeScale.WEEK));
+            } else if (newValue == TimeScale.DAY) {
                 scaleGroup.selectToggle(topBarView.dayButton());
             } else if (newValue == TimeScale.WEEK || newValue == TimeScale.MONTH) {
                 scaleGroup.selectToggle(topBarView.weekButton());
@@ -158,7 +190,26 @@ public class MainView extends BorderPane {
         });
         scaleGroup.selectToggle(topBarView.weekButton());
 
-        topBarView.zoomSlider().valueProperty().bindBidirectional(viewModel.zoomProperty());
+        topBarView.zoomField().setOnAction(event -> commitZoomField());
+        topBarView.zoomField().focusedProperty().addListener((obs, oldValue, focused) -> {
+            if (!focused) {
+                commitZoomField();
+            }
+        });
+        viewModel.zoomProperty().addListener((obs, oldValue, newValue) -> {
+            if (horizontalZoomSyncing) {
+                return;
+            }
+            horizontalZoomSyncing = true;
+            topBarView.zoomField().setText(formatZoomFieldValue(newValue.doubleValue()));
+            horizontalZoomSyncing = false;
+        });
+        String initialZoomValue = formatZoomFieldValue(viewModel.zoomProperty().get());
+        horizontalZoomSyncing = true;
+        topBarView.zoomField().setText(initialZoomValue);
+        horizontalZoomSyncing = false;
+        topBarView.projectsToggleButton().setOnAction(event -> toggleProjectsDrawer());
+        topBarView.inspectorToggleButton().setOnAction(event -> toggleTaskInspectorDrawer());
 
         topBarView.addTaskButton().setOnAction(event -> createTaskFromToolbar());
 
@@ -291,44 +342,64 @@ public class MainView extends BorderPane {
         });
     }
 
-    private void configureSummaryBoard() {
-        configureSummaryList(boardSummaryView.dueTodayListView(), viewModel.dueToday(), false);
-        configureSummaryList(boardSummaryView.dueInSevenListView(), viewModel.dueInSevenDays(), false);
-        configureSummaryList(boardSummaryView.overdueListView(), viewModel.overdue(), true);
-        configureSummaryList(boardSummaryView.blockedListView(), viewModel.blockedByDependencies(), false);
+    private void configureProjectsDrawer() {
+        projectsSidebarHost.getStyleClass().add("projects-sidebar-host");
+        projectsSidebarHost.setMinWidth(0);
+        projectsSidebarHost.setPrefWidth(0);
+        projectsSidebarHost.setMaxWidth(0);
+        projectsSidebarHost.setAlignment(Pos.CENTER_LEFT);
+        projectsSidebarHost.setClip(projectsSidebarClip);
+        projectsSidebarHost.layoutBoundsProperty().addListener((obs, oldBounds, newBounds) -> {
+            projectsSidebarClip.setWidth(newBounds.getWidth());
+            projectsSidebarClip.setHeight(newBounds.getHeight());
+        });
+
+        double targetWidth = projectsSidebarTargetWidth();
+        projectsSidebarView.setTranslateX(-targetWidth);
+        projectsSidebarView.setOpacity(0.0);
+        projectsSidebarView.setManaged(true);
+        projectsSidebarView.setVisible(true);
+
+        projectsSidebarView.prefWidthProperty().addListener((obs, oldValue, newValue) -> {
+            if (!projectsSidebarVisible) {
+                setSidebarHostWidth(0);
+                projectsSidebarView.setTranslateX(-projectsSidebarTargetWidth());
+            }
+        });
     }
 
-    private void configureSummaryList(ListView<Task> listView, ObservableList<Task> tasks, boolean pillStyle) {
-        listView.setItems(tasks);
-        listView.setFocusTraversable(false);
-        // Display-only cards should not intercept interaction beyond their own area.
-        listView.setMouseTransparent(true);
-        listView.setCellFactory(view -> new ListCell<>() {
-            @Override
-            protected void updateItem(Task task, boolean empty) {
-                super.updateItem(task, empty);
-                if (empty || task == null) {
-                    setGraphic(null);
-                    setText(null);
-                    return;
-                }
-                Label itemLabel = new Label(task.title() + " (" + i18n.t("due") + " " + task.dueDate() + ")");
-                itemLabel.getStyleClass().add("summary-item-label");
-                if (pillStyle) {
-                    itemLabel.getStyleClass().add("summary-pill");
-                }
-                setGraphic(itemLabel);
-                setText(null);
+    private void configureTaskInspectorDrawer() {
+        taskInspectorHost.getStyleClass().add("task-inspector-host");
+        taskInspectorHost.setMinWidth(0);
+        taskInspectorHost.setPrefWidth(0);
+        taskInspectorHost.setMaxWidth(0);
+        taskInspectorHost.setAlignment(Pos.CENTER_RIGHT);
+        taskInspectorHost.setClip(taskInspectorClip);
+        taskInspectorHost.layoutBoundsProperty().addListener((obs, oldBounds, newBounds) -> {
+            taskInspectorClip.setWidth(newBounds.getWidth());
+            taskInspectorClip.setHeight(newBounds.getHeight());
+        });
+
+        double targetWidth = taskInspectorTargetWidth();
+        taskInspectorView.setTranslateX(targetWidth);
+        taskInspectorView.setOpacity(0.0);
+        taskInspectorView.setManaged(true);
+        taskInspectorView.setVisible(true);
+
+        taskInspectorView.prefWidthProperty().addListener((obs, oldValue, newValue) -> {
+            if (!taskInspectorVisible) {
+                setTaskInspectorHostWidth(0);
+                taskInspectorView.setTranslateX(taskInspectorTargetWidth());
             }
         });
     }
 
     private void configureInspector() {
         taskInspectorView.statusComboBox().setItems(viewModel.statusOptions());
+        taskInspectorView.statusComboBox().setButtonCell(buildStatusCell());
+        taskInspectorView.statusComboBox().setCellFactory(listView -> buildStatusCell());
 
-        taskInspectorView.progressSlider().setShowTickMarks(true);
-        taskInspectorView.progressSlider().setShowTickLabels(true);
-        taskInspectorView.progressSlider().setMajorTickUnit(25);
+        taskInspectorView.progressField().setPromptText("0-100");
 
         taskInspectorView.manageStatusesButton().setOnAction(event -> showStatusManagerDialog());
 
@@ -359,6 +430,8 @@ public class MainView extends BorderPane {
         themeManager.effectiveThemeProperty().addListener((obs, oldValue, newValue) ->
                 ganttChartView.setDarkTheme(newValue == ThemeManager.ThemeMode.DARK));
         ganttChartView.setDarkTheme(themeManager.effectiveTheme() == ThemeManager.ThemeMode.DARK);
+        ganttChartView.setLocale(i18n.language().locale());
+        ganttChartView.setChineseTypography(i18n.language() == LanguageManager.Language.CHINESE);
     }
 
     private void wireProjectSelection() {
@@ -372,11 +445,189 @@ public class MainView extends BorderPane {
             if (newValue != null && projectsSidebarView.projectListView().getSelectionModel().getSelectedItem() != newValue) {
                 projectsSidebarView.projectListView().getSelectionModel().select(newValue);
             }
+            updateProjectActionState(newValue);
+            updateInspectorActions(viewModel.selectedTaskProperty().get());
         });
 
         if (!viewModel.projects().isEmpty()) {
             projectsSidebarView.projectListView().getSelectionModel().select(viewModel.projects().getFirst());
         }
+    }
+
+    private void toggleProjectsDrawer() {
+        setProjectsSidebarVisible(!projectsSidebarVisible);
+    }
+
+    private void toggleTaskInspectorDrawer() {
+        setTaskInspectorVisible(!taskInspectorVisible);
+    }
+
+    private void setProjectsSidebarVisible(boolean visible) {
+        if (projectsSidebarTimeline != null) {
+            projectsSidebarTimeline.stop();
+        }
+
+        double sidebarTargetWidth = projectsSidebarTargetWidth();
+        double targetWidth = visible ? sidebarTargetWidth : 0.0;
+        double targetTranslateX = visible ? 0.0 : -sidebarTargetWidth;
+        double targetOpacity = visible ? 1.0 : 0.0;
+
+        projectsSidebarTimeline = new Timeline(
+                new KeyFrame(Duration.ZERO,
+                        new KeyValue(projectsSidebarHost.minWidthProperty(), currentSidebarHostWidth()),
+                        new KeyValue(projectsSidebarHost.prefWidthProperty(), currentSidebarHostWidth()),
+                        new KeyValue(projectsSidebarHost.maxWidthProperty(), currentSidebarHostWidth()),
+                        new KeyValue(projectsSidebarView.translateXProperty(), projectsSidebarView.getTranslateX()),
+                        new KeyValue(projectsSidebarView.opacityProperty(), projectsSidebarView.getOpacity())
+                ),
+                new KeyFrame(PROJECTS_SIDEBAR_ANIMATION_DURATION,
+                        new KeyValue(projectsSidebarHost.minWidthProperty(), targetWidth, Interpolator.EASE_BOTH),
+                        new KeyValue(projectsSidebarHost.prefWidthProperty(), targetWidth, Interpolator.EASE_BOTH),
+                        new KeyValue(projectsSidebarHost.maxWidthProperty(), targetWidth, Interpolator.EASE_BOTH),
+                        new KeyValue(projectsSidebarView.translateXProperty(), targetTranslateX, Interpolator.EASE_BOTH),
+                        new KeyValue(projectsSidebarView.opacityProperty(), targetOpacity, Interpolator.EASE_BOTH)
+                )
+        );
+
+        projectsSidebarTimeline.setOnFinished(event -> {
+            projectsSidebarVisible = visible;
+            if (!visible) {
+                setSidebarHostWidth(0);
+                projectsSidebarView.setTranslateX(-projectsSidebarTargetWidth());
+                projectsSidebarView.setOpacity(0.0);
+            } else {
+                setSidebarHostWidth(sidebarTargetWidth);
+                projectsSidebarView.setTranslateX(0.0);
+                projectsSidebarView.setOpacity(1.0);
+            }
+            updateProjectsToggleButtonStyle(visible);
+        });
+
+        projectsSidebarVisible = visible;
+        updateProjectsToggleButtonStyle(visible);
+        projectsSidebarTimeline.playFromStart();
+    }
+
+    private void updateProjectsToggleButtonStyle(boolean active) {
+        if (active) {
+            if (!topBarView.projectsToggleButton().getStyleClass().contains("projects-toggle-active")) {
+                topBarView.projectsToggleButton().getStyleClass().add("projects-toggle-active");
+            }
+        } else {
+            topBarView.projectsToggleButton().getStyleClass().remove("projects-toggle-active");
+        }
+    }
+
+    private void setTaskInspectorVisible(boolean visible) {
+        if (taskInspectorTimeline != null) {
+            taskInspectorTimeline.stop();
+        }
+
+        double inspectorTargetWidth = taskInspectorTargetWidth();
+        double targetWidth = visible ? inspectorTargetWidth : 0.0;
+        double targetTranslateX = visible ? 0.0 : inspectorTargetWidth;
+        double targetOpacity = visible ? 1.0 : 0.0;
+
+        taskInspectorTimeline = new Timeline(
+                new KeyFrame(Duration.ZERO,
+                        new KeyValue(taskInspectorHost.minWidthProperty(), currentTaskInspectorHostWidth()),
+                        new KeyValue(taskInspectorHost.prefWidthProperty(), currentTaskInspectorHostWidth()),
+                        new KeyValue(taskInspectorHost.maxWidthProperty(), currentTaskInspectorHostWidth()),
+                        new KeyValue(taskInspectorView.translateXProperty(), taskInspectorView.getTranslateX()),
+                        new KeyValue(taskInspectorView.opacityProperty(), taskInspectorView.getOpacity())
+                ),
+                new KeyFrame(TASK_INSPECTOR_SIDEBAR_ANIMATION_DURATION,
+                        new KeyValue(taskInspectorHost.minWidthProperty(), targetWidth, Interpolator.EASE_BOTH),
+                        new KeyValue(taskInspectorHost.prefWidthProperty(), targetWidth, Interpolator.EASE_BOTH),
+                        new KeyValue(taskInspectorHost.maxWidthProperty(), targetWidth, Interpolator.EASE_BOTH),
+                        new KeyValue(taskInspectorView.translateXProperty(), targetTranslateX, Interpolator.EASE_BOTH),
+                        new KeyValue(taskInspectorView.opacityProperty(), targetOpacity, Interpolator.EASE_BOTH)
+                )
+        );
+
+        taskInspectorTimeline.setOnFinished(event -> {
+            taskInspectorVisible = visible;
+            if (!visible) {
+                setTaskInspectorHostWidth(0);
+                taskInspectorView.setTranslateX(taskInspectorTargetWidth());
+                taskInspectorView.setOpacity(0.0);
+            } else {
+                setTaskInspectorHostWidth(inspectorTargetWidth);
+                taskInspectorView.setTranslateX(0.0);
+                taskInspectorView.setOpacity(1.0);
+            }
+            updateInspectorToggleButtonStyle(visible);
+        });
+
+        taskInspectorVisible = visible;
+        updateInspectorToggleButtonStyle(visible);
+        taskInspectorTimeline.playFromStart();
+    }
+
+    private void updateInspectorToggleButtonStyle(boolean active) {
+        if (active) {
+            if (!topBarView.inspectorToggleButton().getStyleClass().contains("inspector-toggle-active")) {
+                topBarView.inspectorToggleButton().getStyleClass().add("inspector-toggle-active");
+            }
+        } else {
+            topBarView.inspectorToggleButton().getStyleClass().remove("inspector-toggle-active");
+        }
+    }
+
+    private double projectsSidebarTargetWidth() {
+        double width = projectsSidebarView.prefWidth(-1);
+        if (width <= 0) {
+            width = projectsSidebarView.getPrefWidth();
+        }
+        if (width <= 0) {
+            width = 260;
+        }
+        return width;
+    }
+
+    private double currentSidebarHostWidth() {
+        double width = projectsSidebarHost.getWidth();
+        if (width <= 0) {
+            width = projectsSidebarHost.getPrefWidth();
+        }
+        if (width < 0) {
+            width = 0;
+        }
+        return width;
+    }
+
+    private void setSidebarHostWidth(double width) {
+        projectsSidebarHost.setMinWidth(width);
+        projectsSidebarHost.setPrefWidth(width);
+        projectsSidebarHost.setMaxWidth(width);
+    }
+
+    private double taskInspectorTargetWidth() {
+        double width = taskInspectorView.prefWidth(-1);
+        if (width <= 0) {
+            width = taskInspectorView.getPrefWidth();
+        }
+        if (width <= 0) {
+            width = 320;
+        }
+        return width + 12;
+    }
+
+    private double currentTaskInspectorHostWidth() {
+        double width = taskInspectorHost.getWidth();
+        if (width <= 0) {
+            width = taskInspectorHost.getPrefWidth();
+        }
+        if (width < 0) {
+            width = 0;
+        }
+        return width;
+    }
+
+    private void setTaskInspectorHostWidth(double width) {
+        taskInspectorHost.setMinWidth(width);
+        taskInspectorHost.setPrefWidth(width);
+        taskInspectorHost.setMaxWidth(width);
     }
 
     private void wireTaskInspector() {
@@ -390,15 +641,12 @@ public class MainView extends BorderPane {
         taskInspectorView.startDatePicker().setOnAction(event -> commitDates());
         taskInspectorView.dueDatePicker().setOnAction(event -> commitDates());
 
-        taskInspectorView.progressSlider().valueProperty().addListener((obs, oldValue, newValue) ->
-                taskInspectorView.progressValueLabel().setText(newValue.intValue() + "%"));
-
-        taskInspectorView.progressSlider().valueChangingProperty().addListener((obs, oldValue, changing) -> {
-            if (!changing) {
+        taskInspectorView.progressField().setOnAction(event -> commitProgress());
+        taskInspectorView.progressField().focusedProperty().addListener((obs, oldValue, focused) -> {
+            if (!focused) {
                 commitProgress();
             }
         });
-        taskInspectorView.progressSlider().setOnMouseReleased(event -> commitProgress());
 
         taskInspectorView.descriptionArea().focusedProperty().addListener((obs, oldValue, focused) -> {
             if (!focused) {
@@ -438,38 +686,33 @@ public class MainView extends BorderPane {
                 refreshInspector(viewModel.selectedTaskProperty().get());
             }
         });
+
+        taskInspectorView.dependencyListView().getSelectionModel().selectedItemProperty().addListener((obs, oldValue, newValue) ->
+                updateInspectorActions(viewModel.selectedTaskProperty().get()));
+        viewModel.projectTasks().addListener((ListChangeListener<? super Task>) change ->
+                updateInspectorActions(viewModel.selectedTaskProperty().get()));
     }
 
     private void wireGantt() {
         ganttChartView.setTasks(viewModel.projectTasks());
         ganttChartView.scaleProperty().bind(viewModel.scaleProperty());
         ganttChartView.zoomProperty().bind(viewModel.zoomProperty());
+        ganttChartView.setEditingEnabled(true);
         ganttChartView.setOnTaskSelected(viewModel::selectTask);
+        ganttChartView.setOnTaskDateChanged((taskId, startDate, dueDate) -> {
+            try {
+                viewModel.updateTaskDatesFromGantt(taskId, startDate, dueDate);
+            } catch (ValidationException ex) {
+                showValidationError(ex.getMessage());
+                ganttChartView.refresh();
+            }
+        });
+        ganttChartView.setOnTaskCreateSelected(this::handleTimelineDragCreate);
         ganttChartView.setSelectionTextProvider((startDate, dueDate) ->
                 i18n.t("drag_create_tooltip").formatted(formatDateForLanguage(startDate), formatDateForLanguage(dueDate)));
-
-        ganttChartView.setTaskColorProvider(task -> viewModel.projects().stream()
-                .filter(project -> project.id() == task.projectId())
-                .map(Project::color)
-                .findFirst()
-                .orElse("#2563EB"));
+        ganttChartView.setTaskColorProvider(statusColorManager::barColorHex);
 
         viewModel.projects().addListener((ListChangeListener<? super Project>) change -> ganttChartView.refresh());
-    }
-
-    private void applyInteractionLockdown() {
-        // This iteration keeps non-essential controls read-only to reduce accidental edits.
-        ganttChartView.setEditingEnabled(false);
-
-        projectsSidebarView.addProjectButton().setDisable(true);
-        projectsSidebarView.editProjectButton().setDisable(true);
-        projectsSidebarView.deleteProjectButton().setDisable(true);
-
-        taskInspectorView.addDependencyButton().setDisable(true);
-        taskInspectorView.removeDependencyButton().setDisable(true);
-        taskInspectorView.deleteTaskButton().setDisable(true);
-        taskInspectorView.manageStatusesButton().setDisable(true);
-        taskInspectorView.dependencyListView().setDisable(true);
     }
 
     private void wireDerivedState() {
@@ -508,18 +751,23 @@ public class MainView extends BorderPane {
             if (topBarView.languageComboBox().getValue() != newValue) {
                 topBarView.languageComboBox().setValue(newValue);
             }
+            ganttChartView.setLocale(newValue.locale());
+            ganttChartView.setChineseTypography(newValue == LanguageManager.Language.CHINESE);
             applyTranslations();
         });
     }
 
     private void applyTranslations() {
         topBarView.scaleLabel().setText(i18n.t("scale"));
+        topBarView.hourButton().setText(i18n.t("hour"));
         topBarView.dayButton().setText(i18n.t("day"));
         topBarView.weekButton().setText(i18n.t("week"));
         topBarView.yearButton().setText(i18n.t("year"));
         topBarView.zoomLabel().setText(i18n.t("zoom"));
         topBarView.languageLabel().setText(i18n.t("language"));
         topBarView.themeLabel().setText(i18n.t("theme"));
+        topBarView.projectsToggleButton().setText(i18n.t("projects"));
+        topBarView.inspectorToggleButton().setText(i18n.t("task_inspector"));
 
         topBarView.addTaskButton().setText(i18n.t("add_task"));
         projectsSidebarView.titleLabel().setText(i18n.t("projects"));
@@ -527,12 +775,8 @@ public class MainView extends BorderPane {
         projectsSidebarView.editProjectButton().setText(i18n.t("edit"));
         projectsSidebarView.deleteProjectButton().setText(i18n.t("delete"));
 
-        boardSummaryView.dueTodayTitleLabel().setText(i18n.t("due_today"));
-        boardSummaryView.dueInSevenTitleLabel().setText(i18n.t("due_7_days"));
-        boardSummaryView.overdueTitleLabel().setText(i18n.t("overdue"));
-        boardSummaryView.blockedTitleLabel().setText(i18n.t("blocked_dependencies"));
-
-        taskInspectorView.inspectorTitleLabel().setText(i18n.t("task_inspector"));
+        inspectorTitleText = i18n.t("task_inspector");
+        taskInspectorView.inspectorTitleLabel().setText(inspectorTitleText);
         taskInspectorView.titleLabel().setText(i18n.t("title"));
         taskInspectorView.startDateLabel().setText(i18n.t("start_date"));
         taskInspectorView.dueDateLabel().setText(i18n.t("due_date"));
@@ -545,13 +789,17 @@ public class MainView extends BorderPane {
         taskInspectorView.removeDependencyButton().setText(i18n.t("remove_dependency"));
         taskInspectorView.deleteTaskButton().setText(i18n.t("delete_task"));
         taskInspectorView.manageStatusesButton().setText(i18n.t("manage"));
+        ganttChartView.setEmptyStateText(i18n.t("timeline_empty_title"), i18n.t("timeline_empty_hint"));
 
         updateProjectFinishDateLabel();
+        updateInspectorHeader(viewModel.selectedTaskProperty().get());
 
         if (viewModel.selectedTaskProperty().get() != null) {
             updateSlackLabel(viewModel.selectedTaskProperty().get());
         } else {
             taskInspectorView.slackLabel().setText(i18n.t("slack") + ": -");
+            taskInspectorView.selectedTaskLabel().setText("-");
+            taskInspectorView.selectedTaskLabel().setStyle("");
         }
 
         ThemeManager.ThemeMode selectedTheme = topBarView.themeComboBox().getValue();
@@ -559,9 +807,12 @@ public class MainView extends BorderPane {
             topBarView.themeComboBox().setValue(null);
             topBarView.themeComboBox().setValue(selectedTheme);
         }
+
+        applyLanguageTypography();
     }
 
     private void createTaskFromToolbar() {
+        setTaskInspectorVisible(true);
         if (viewModel.selectedProjectProperty().get() == null) {
             showValidationError(i18n.t("select_project_before_task"));
             return;
@@ -572,8 +823,7 @@ public class MainView extends BorderPane {
 
         try {
             Task createdTask = viewModel.createTask(i18n.t("new_task_default_title"), startDate, dueDate);
-            viewModel.selectTask(createdTask);
-            ganttChartView.focusTask(createdTask.id());
+            navigateToTask(createdTask);
 
             // +Task keeps creation in the inspector: create task first, then focus the title field for immediate editing.
             Platform.runLater(() -> {
@@ -597,32 +847,31 @@ public class MainView extends BorderPane {
     private void refreshInspector(Task task) {
         inspectorUpdating = true;
         boolean disabled = task == null;
+        taskInspectorView.setSelectionActive(!disabled);
 
         taskInspectorView.titleField().setDisable(disabled);
         taskInspectorView.startDatePicker().setDisable(disabled);
         taskInspectorView.dueDatePicker().setDisable(disabled);
-        taskInspectorView.progressSlider().setDisable(disabled);
+        taskInspectorView.progressField().setDisable(disabled);
         taskInspectorView.descriptionArea().setDisable(disabled);
         taskInspectorView.statusComboBox().setDisable(disabled);
-        taskInspectorView.manageStatusesButton().setDisable(disabled || restrictedInteractionMode);
-        taskInspectorView.dependencyListView().setDisable(disabled || restrictedInteractionMode);
 
         if (task == null) {
             taskInspectorView.titleField().clear();
             taskInspectorView.startDatePicker().setValue(null);
             taskInspectorView.dueDatePicker().setValue(null);
-            taskInspectorView.progressSlider().setValue(0);
-            taskInspectorView.progressValueLabel().setText("0%");
+            taskInspectorView.progressField().setText("0");
             taskInspectorView.descriptionArea().clear();
             taskInspectorView.statusComboBox().setValue(null);
             taskInspectorView.dependencyListView().getItems().clear();
             taskInspectorView.slackLabel().setText(i18n.t("slack") + ": -");
+            taskInspectorView.selectedTaskLabel().setText("-");
+            taskInspectorView.selectedTaskLabel().setStyle("");
         } else {
             taskInspectorView.titleField().setText(task.title());
             taskInspectorView.startDatePicker().setValue(task.startDate());
             taskInspectorView.dueDatePicker().setValue(task.dueDate());
-            taskInspectorView.progressSlider().setValue(task.progress());
-            taskInspectorView.progressValueLabel().setText(task.progress() + "%");
+            taskInspectorView.progressField().setText(String.valueOf(task.progress()));
             taskInspectorView.descriptionArea().setText(task.description());
 
             if (!taskInspectorView.statusComboBox().getItems().contains(task.status())) {
@@ -638,9 +887,34 @@ public class MainView extends BorderPane {
             taskInspectorView.dependencyListView().getItems().setAll(viewModel.dependenciesForSelectedTask());
             taskInspectorView.dependencyListView().getItems().sort(Comparator.comparing(viewModel::dependencyLabel));
             updateSlackLabel(task);
+
+            StatusColorManager.StatusTone tone = statusColorManager.toneForTask(task);
+            taskInspectorView.selectedTaskLabel().setText(tone.label());
+            taskInspectorView.selectedTaskLabel().setStyle(statusColorManager.chipStyle(tone));
         }
+        updateInspectorHeader(task);
+        updateInspectorActions(task);
 
         inspectorUpdating = false;
+    }
+
+    private void updateProjectActionState(Project selectedProject) {
+        boolean hasProject = selectedProject != null;
+        projectsSidebarView.addProjectButton().setDisable(false);
+        projectsSidebarView.editProjectButton().setDisable(!hasProject);
+        projectsSidebarView.deleteProjectButton().setDisable(!hasProject);
+    }
+
+    private void updateInspectorActions(Task task) {
+        boolean hasTask = task != null;
+        boolean hasDependencySelection = taskInspectorView.dependencyListView().getSelectionModel().getSelectedItem() != null;
+        int projectTaskCount = viewModel.projectTasks().size();
+
+        taskInspectorView.manageStatusesButton().setDisable(false);
+        taskInspectorView.dependencyListView().setDisable(!hasTask);
+        taskInspectorView.addDependencyButton().setDisable(!hasTask || projectTaskCount <= 1);
+        taskInspectorView.removeDependencyButton().setDisable(!hasTask || !hasDependencySelection);
+        taskInspectorView.deleteTaskButton().setDisable(!hasTask);
     }
 
     private void updateSlackLabel(Task task) {
@@ -650,6 +924,75 @@ public class MainView extends BorderPane {
         } else {
             taskInspectorView.slackLabel().setText(i18n.t("slack") + ": " + slackDays + " " + i18n.t("slack_days"));
         }
+    }
+
+    private ListCell<String> buildStatusCell() {
+        return new ListCell<>() {
+            @Override
+            protected void updateItem(String status, boolean empty) {
+                super.updateItem(status, empty);
+                if (empty || status == null) {
+                    setGraphic(null);
+                    setText(null);
+                    return;
+                }
+                StatusColorManager.StatusTone tone = statusColorManager.toneForStatus(status, false);
+                Label chip = new Label(statusColorManager.displayStatus(status));
+                chip.getStyleClass().add("status-chip");
+                chip.setStyle(statusColorManager.chipStyle(tone));
+                setGraphic(chip);
+                setText(null);
+            }
+        };
+    }
+
+    private void navigateToTask(Task task) {
+        if (task == null) {
+            return;
+        }
+        viewModel.selectTaskById(task.id());
+        ganttChartView.scrollToTask(task);
+    }
+
+    private void updateInspectorHeader(Task task) {
+        if (task == null) {
+            taskInspectorView.inspectorTitleLabel().setText(inspectorTitleText);
+            return;
+        }
+        taskInspectorView.inspectorTitleLabel().setText(inspectorTitleText + " · " + task.title());
+    }
+
+    private void applyLanguageTypography() {
+        getStyleClass().remove("lang-zh");
+        if (i18n.language() == LanguageManager.Language.CHINESE) {
+            getStyleClass().add("lang-zh");
+            if (!hasPreferredChineseFont()) {
+                if (!FONT_WARNING_MESSAGE.equals(viewModel.bannerMessageProperty().get())) {
+                    viewModel.bannerMessageProperty().set(FONT_WARNING_MESSAGE);
+                }
+            } else if (isFontWarning(viewModel.bannerMessageProperty().get())) {
+                viewModel.bannerMessageProperty().set("");
+            }
+            return;
+        }
+        if (isFontWarning(viewModel.bannerMessageProperty().get())) {
+            viewModel.bannerMessageProperty().set("");
+        }
+    }
+
+    private boolean hasPreferredChineseFont() {
+        Set<String> installed = Set.copyOf(Font.getFamilies());
+        return installed.contains("Noto Sans SC")
+                || installed.contains("PingFang SC")
+                || installed.contains("Microsoft YaHei UI")
+                || installed.contains("HarmonyOS Sans SC")
+                || installed.contains("Microsoft YaHei")
+                || installed.contains("Noto Sans CJK SC")
+                || installed.contains("Source Han Sans SC");
+    }
+
+    private boolean isFontWarning(String text) {
+        return text != null && text.startsWith(FONT_WARNING_PREFIX);
     }
 
     private void commitTitle() {
@@ -682,7 +1025,31 @@ public class MainView extends BorderPane {
         if (inspectorUpdating || viewModel.selectedTaskProperty().get() == null) {
             return;
         }
-        viewModel.updateSelectedTaskProgress((int) Math.round(taskInspectorView.progressSlider().getValue()));
+        Integer progress = parseProgressInput(taskInspectorView.progressField().getText());
+        if (progress == null) {
+            taskInspectorView.progressField().setText(String.valueOf(viewModel.selectedTaskProperty().get().progress()));
+            return;
+        }
+        viewModel.updateSelectedTaskProgress(progress);
+        taskInspectorView.progressField().setText(String.valueOf(progress));
+    }
+
+    private void commitZoomField() {
+        if (horizontalZoomSyncing) {
+            return;
+        }
+        Double zoomValue = parseZoomInput(topBarView.zoomField().getText());
+        if (zoomValue == null) {
+            horizontalZoomSyncing = true;
+            topBarView.zoomField().setText(formatZoomFieldValue(viewModel.zoomProperty().get()));
+            horizontalZoomSyncing = false;
+            return;
+        }
+
+        viewModel.zoomProperty().set(zoomValue);
+        horizontalZoomSyncing = true;
+        topBarView.zoomField().setText(formatZoomFieldValue(zoomValue));
+        horizontalZoomSyncing = false;
     }
 
     private void commitDescriptionForSelectedTask() {
@@ -754,6 +1121,7 @@ public class MainView extends BorderPane {
         Task createdTask;
         try {
             createdTask = viewModel.createTask(i18n.t("new_task_default_title"), startDate, dueDate);
+            setTaskInspectorVisible(true);
         } catch (ValidationException ex) {
             timelineCreateDialogOpen = false;
             showValidationError(ex.getMessage());
@@ -781,8 +1149,7 @@ public class MainView extends BorderPane {
                     viewModel.updateSelectedTaskTitle(title);
                 }
                 viewModel.findTask(task.id()).ifPresent(updatedTask -> {
-                    viewModel.selectTask(updatedTask);
-                    ganttChartView.focusTask(updatedTask.id());
+                    navigateToTask(updatedTask);
                 });
             }));
         } finally {
@@ -846,6 +1213,47 @@ public class MainView extends BorderPane {
                 ? DateTimeFormatter.ofPattern("yyyy年M月d日")
                 : DateTimeFormatter.ofPattern("MMM d, yyyy");
         return formatter.format(date);
+    }
+
+    private String formatZoomFieldValue(double zoom) {
+        double clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+        return String.valueOf((int) Math.round(clampedZoom * 100));
+    }
+
+    private Double parseZoomInput(String text) {
+        if (text == null) {
+            return null;
+        }
+        String normalized = text.trim().replace("%", "");
+        if (normalized.isEmpty()) {
+            return null;
+        }
+        try {
+            double percent = Double.parseDouble(normalized);
+            double clampedPercent = Math.max(25, Math.min(400, percent));
+            return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, clampedPercent / 100.0));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private Integer parseProgressInput(String text) {
+        if (text == null) {
+            return null;
+        }
+        String normalized = text.trim().replace("%", "");
+        if (normalized.isEmpty()) {
+            return null;
+        }
+        try {
+            int parsed = Integer.parseInt(normalized);
+            if (parsed < 0 || parsed > 100) {
+                return Math.max(0, Math.min(100, parsed));
+            }
+            return parsed;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private void showStatusManagerDialog() {
