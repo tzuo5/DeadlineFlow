@@ -6,6 +6,7 @@ import com.deadlineflow.domain.model.Project;
 import com.deadlineflow.domain.model.Task;
 import com.deadlineflow.domain.model.TimeScale;
 import com.deadlineflow.presentation.components.GanttChartView;
+import com.deadlineflow.presentation.theme.StatusColorManager;
 import com.deadlineflow.presentation.theme.ThemeManager;
 import com.deadlineflow.presentation.view.sections.BoardSummaryView;
 import com.deadlineflow.presentation.view.sections.ProjectsSidebarView;
@@ -13,6 +14,7 @@ import com.deadlineflow.presentation.view.sections.TaskInspectorView;
 import com.deadlineflow.presentation.view.sections.TopBarView;
 import com.deadlineflow.presentation.viewmodel.LanguageManager;
 import com.deadlineflow.presentation.viewmodel.MainViewModel;
+import javafx.animation.FadeTransition;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.collections.ListChangeListener;
@@ -20,6 +22,7 @@ import javafx.collections.ObservableList;
 import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -38,10 +41,12 @@ import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.stage.Window;
+import javafx.util.Duration;
 import javafx.util.StringConverter;
 
 import java.time.LocalDate;
@@ -58,6 +63,7 @@ public class MainView extends BorderPane {
     private final MainViewModel viewModel;
     private final LanguageManager i18n;
     private final ThemeManager themeManager;
+    private final StatusColorManager statusColorManager = new StatusColorManager();
 
     private final TopBarView topBarView = new TopBarView();
     private final ProjectsSidebarView projectsSidebarView = new ProjectsSidebarView();
@@ -71,6 +77,7 @@ public class MainView extends BorderPane {
     private boolean timelineCreateDialogOpen;
     private boolean ganttDerivedRefreshQueued;
     private final boolean restrictedInteractionMode = true;
+    private String inspectorTitleText = "";
 
     public MainView(MainViewModel viewModel, LanguageManager i18n, ThemeManager themeManager) {
         this.viewModel = viewModel;
@@ -225,18 +232,26 @@ public class MainView extends BorderPane {
                 if (empty || project == null) {
                     setGraphic(null);
                     setText(null);
+                    setCursor(Cursor.DEFAULT);
                     return;
                 }
                 Circle dot = new Circle(5, safeColor(project.color()));
                 dot.getStyleClass().add("project-dot");
                 Label label = new Label(project.name());
                 label.getStyleClass().add("project-item-label");
-                HBox row = new HBox(8, dot, label);
+                Label count = new Label(String.valueOf(viewModel.taskCountForProject(project.id())));
+                count.getStyleClass().add("project-count-badge");
+                Region spacer = new Region();
+                HBox.setHgrow(spacer, Priority.ALWAYS);
+                HBox row = new HBox(8, dot, label, spacer, count);
                 row.setAlignment(Pos.CENTER_LEFT);
+                setCursor(Cursor.HAND);
                 setGraphic(row);
                 setText(null);
             }
         });
+        viewModel.allTasks().addListener((ListChangeListener<? super Task>) change ->
+                projectsSidebarView.projectListView().refresh());
 
         projectsSidebarView.addProjectButton().setOnAction(event -> {
             Optional<ProjectDialog.Result> result = ProjectDialog.show(getWindow(), null);

@@ -16,6 +16,7 @@ import javafx.scene.layout.VBox;
 
 public class TaskInspectorView extends VBox {
     private final Label inspectorTitleLabel = new Label();
+    private final Label selectedTaskLabel = new Label();
     private final Label titleLabel = new Label();
     private final TextField titleField = new TextField();
 
@@ -53,6 +54,7 @@ public class TaskInspectorView extends VBox {
         setMaxWidth(360);
 
         inspectorTitleLabel.getStyleClass().add("section-title");
+        selectedTaskLabel.getStyleClass().add("inspector-task-title");
         titleLabel.getStyleClass().add("field-label");
         startDateLabel.getStyleClass().add("field-label");
         dueDateLabel.getStyleClass().add("field-label");
@@ -62,6 +64,12 @@ public class TaskInspectorView extends VBox {
         dependenciesLabel.getStyleClass().add("field-label");
         slackLabel.getStyleClass().add("muted-label");
         progressValueLabel.getStyleClass().add("muted-label");
+        titleField.getStyleClass().add("inspector-input-target");
+        startDatePicker.getStyleClass().add("inspector-input-target");
+        dueDatePicker.getStyleClass().add("inspector-input-target");
+        progressSlider.getStyleClass().add("inspector-input-target");
+        descriptionArea.getStyleClass().add("inspector-input-target");
+        statusComboBox.getStyleClass().add("inspector-input-target");
 
         HBox progressRow = new HBox(10, progressSlider, progressValueLabel);
         progressRow.setFillHeight(true);
@@ -91,6 +99,7 @@ public class TaskInspectorView extends VBox {
 
         getChildren().addAll(
                 inspectorTitleLabel,
+                selectedTaskLabel,
                 titleLabel, titleField,
                 startDateLabel, startDatePicker,
                 dueDateLabel, dueDatePicker,
@@ -105,6 +114,10 @@ public class TaskInspectorView extends VBox {
 
     public Label inspectorTitleLabel() {
         return inspectorTitleLabel;
+    }
+
+    public Label selectedTaskLabel() {
+        return selectedTaskLabel;
     }
 
     public Label titleLabel() {
@@ -185,5 +198,15 @@ public class TaskInspectorView extends VBox {
 
     public Button deleteTaskButton() {
         return deleteTaskButton;
+    }
+
+    public void setSelectionActive(boolean active) {
+        if (active) {
+            if (!getStyleClass().contains("inspector-active")) {
+                getStyleClass().add("inspector-active");
+            }
+        } else {
+            getStyleClass().remove("inspector-active");
+        }
     }
 }

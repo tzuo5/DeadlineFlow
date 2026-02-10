@@ -40,6 +40,10 @@ public class TopBarView extends VBox {
 
         bannerLabel.getStyleClass().add("status-banner");
         cpmBanner.getStyleClass().addAll("status-banner", "status-banner-error");
+        scaleLabel.getStyleClass().add("toolbar-group-label");
+        zoomLabel.getStyleClass().add("toolbar-group-label");
+        themeLabel.getStyleClass().add("toolbar-group-label");
+        languageLabel.getStyleClass().add("toolbar-group-label");
 
         HBox segmentedScale = new HBox(dayButton, weekButton, yearButton);
         segmentedScale.getStyleClass().add("segmented-control");
@@ -59,22 +63,32 @@ public class TopBarView extends VBox {
         HBox.setHgrow(zoomSlider, Priority.ALWAYS);
         middle.setPrefWidth(320);
 
-        HBox right = new HBox(
-                10,
-                themeLabel, themeComboBox,
-                languageLabel, languageComboBox,
-                addTaskButton
-        );
+        HBox themeGroup = new HBox(8, themeLabel, themeComboBox);
+        themeGroup.setAlignment(Pos.CENTER_LEFT);
+
+        HBox languageGroup = new HBox(8, languageLabel, languageComboBox);
+        languageGroup.setAlignment(Pos.CENTER_LEFT);
+
+        HBox right = new HBox(12, themeGroup, divider(), languageGroup, addTaskButton);
         right.setAlignment(Pos.CENTER_RIGHT);
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        HBox toolbarRow = new HBox(16, left, middle, spacer, right, finishDateLabel);
+        HBox toolbarRow = new HBox(14, left, divider(), middle, spacer, right, finishDateLabel);
         toolbarRow.getStyleClass().addAll("panel-card", "toolbar-row");
         toolbarRow.setAlignment(Pos.CENTER_LEFT);
 
         getChildren().addAll(bannerLabel, cpmBanner, toolbarRow);
+    }
+
+    private Region divider() {
+        Region divider = new Region();
+        divider.getStyleClass().add("toolbar-divider");
+        divider.setMinWidth(1);
+        divider.setPrefWidth(1);
+        divider.setMaxWidth(1);
+        return divider;
     }
 
     public Label bannerLabel() {

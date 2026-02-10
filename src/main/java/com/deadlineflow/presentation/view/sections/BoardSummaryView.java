@@ -39,12 +39,12 @@ public class BoardSummaryView extends HBox {
     private VBox summaryCard(Label titleLabel, ListView<Task> listView) {
         titleLabel.getStyleClass().add("summary-title");
         listView.getStyleClass().add("summary-list");
-        listView.setPrefHeight(110);
-        listView.setFixedCellSize(30);
+        listView.setPrefHeight(82);
+        listView.setFixedCellSize(26);
 
-        VBox card = new VBox(8, titleLabel, listView);
+        VBox card = new VBox(6, titleLabel, listView);
         card.getStyleClass().addAll("panel-card", "summary-card");
-        card.setPadding(new Insets(12));
+        card.setPadding(new Insets(10));
         VBox.setVgrow(listView, Priority.ALWAYS);
         return card;
     }
