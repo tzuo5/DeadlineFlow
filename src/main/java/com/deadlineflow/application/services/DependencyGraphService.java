@@ -15,13 +15,14 @@ import java.util.Set;
 public class DependencyGraphService {
 
     public TopologyResult topologicalSort(Collection<Task> tasks, Collection<Dependency> dependencies) {
-        Map<String, Task> taskById = new HashMap<>();
+        int taskCount = tasks.size();
+        Map<String, Task> taskById = new HashMap<>(Math.max(16, taskCount * 2));
         for (Task task : tasks) {
             taskById.put(task.id(), task);
         }
 
-        Map<String, Set<String>> adjacency = new HashMap<>();
-        Map<String, Integer> indegree = new HashMap<>();
+        Map<String, Set<String>> adjacency = new HashMap<>(Math.max(16, taskCount * 2));
+        Map<String, Integer> indegree = new HashMap<>(Math.max(16, taskCount * 2));
         for (Task task : tasks) {
             adjacency.put(task.id(), new HashSet<>());
             indegree.put(task.id(), 0);
@@ -44,12 +45,16 @@ public class DependencyGraphService {
             }
         }
 
-        List<String> ordered = new ArrayList<>();
+        List<String> ordered = new ArrayList<>(taskCount);
         while (!queue.isEmpty()) {
             String current = queue.removeFirst();
             ordered.add(current);
 
-            for (String next : adjacency.getOrDefault(current, Set.of())) {
+            Set<String> nextNodes = adjacency.get(current);
+            if (nextNodes == null || nextNodes.isEmpty()) {
+                continue;
+            }
+            for (String next : nextNodes) {
                 int nextIndegree = indegree.get(next) - 1;
                 indegree.put(next, nextIndegree);
                 if (nextIndegree == 0) {
@@ -71,7 +76,8 @@ public class DependencyGraphService {
     }
 
     public boolean createsCycle(Collection<Task> tasks, Collection<Dependency> dependencies, Dependency candidate) {
-        List<Dependency> all = new ArrayList<>(dependencies);
+        List<Dependency> all = new ArrayList<>(dependencies.size() + 1);
+        all.addAll(dependencies);
         all.add(candidate);
         return topologicalSort(tasks, all).hasCycle();
     }

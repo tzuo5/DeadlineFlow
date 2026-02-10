@@ -61,6 +61,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -99,6 +100,10 @@ public class GanttChartView extends Region {
     private static final double HOURS_PER_DAY = 24.0;
     private static final Duration HORIZONTAL_SCROLLBAR_FADE_DURATION = Duration.millis(150);
     private static final Duration CURRENT_TIME_INDICATOR_REFRESH_INTERVAL = Duration.seconds(15);
+    private static final double TODAY_INDICATOR_ANIMATION_THRESHOLD_PX = 0.75;
+    private static final int TEXT_WIDTH_CACHE_LIMIT = 1024;
+    private static final int COLOR_CACHE_LIMIT = 512;
+    private static final int GRADIENT_CACHE_LIMIT = 256;
     private static final boolean DRAG_DEBUG = Boolean.getBoolean("deadlineflow.debug.drag");
 
     private final Canvas headerCanvas = new Canvas();
@@ -139,6 +144,8 @@ public class GanttChartView extends Region {
     private final Map<String, Integer> slackByTaskId = new HashMap<>();
     private final Set<String> knownTaskIds = new HashSet<>();
     private final Set<String> pendingEntryAnimationTaskIds = new HashSet<>();
+    private final Map<String, TaskBar> taskBarPool = new HashMap<>();
+    private final List<Node> visibleBarsScratch = new ArrayList<>();
     private boolean taskTrackingInitialized;
 
     private LocalDate timelineStart = LocalDate.now().minusDays(7);
@@ -164,6 +171,32 @@ public class GanttChartView extends Region {
     private Locale uiLocale = Locale.ENGLISH;
     private boolean chineseTypography;
     private String headerFontFamily = "Inter";
+    private Font cachedHeaderPrimaryFont;
+    private Font cachedHeaderSecondaryFont;
+    private Font cachedHeaderYearFont;
+    private DateTimeFormatter cachedHeaderDateFormatter;
+    private DateTimeFormatter cachedHeaderWeekdayFormatter;
+    private DateTimeFormatter cachedHeaderMonthFormatter;
+    private DateTimeFormatter cachedHeaderYearFormatter;
+    private final Text textMeasureProbe = new Text();
+    private final LinkedHashMap<String, Double> textWidthCache = new LinkedHashMap<>(128, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Double> eldest) {
+            return size() > TEXT_WIDTH_CACHE_LIMIT;
+        }
+    };
+    private final LinkedHashMap<String, Color> colorCache = new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Color> eldest) {
+            return size() > COLOR_CACHE_LIMIT;
+        }
+    };
+    private final LinkedHashMap<String, LinearGradient> gradientCache = new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, LinearGradient> eldest) {
+            return size() > GRADIENT_CACHE_LIMIT;
+        }
+    };
 
     public GanttChartView() {
         getStyleClass().add("gantt-chart");
@@ -250,6 +283,12 @@ public class GanttChartView extends Region {
         taskTrackingInitialized = false;
         knownTaskIds.clear();
         pendingEntryAnimationTaskIds.clear();
+        if (!taskBarPool.isEmpty()) {
+            for (TaskBar taskBar : taskBarPool.values()) {
+                taskBar.dispose();
+            }
+            taskBarPool.clear();
+        }
         refreshAll();
     }
 
@@ -295,6 +334,7 @@ public class GanttChartView extends Region {
             return;
         }
         uiLocale = normalized;
+        refreshHeaderRenderingCache();
         barsDirty = true;
         refreshAll();
     }
@@ -314,6 +354,7 @@ public class GanttChartView extends Region {
             return;
         }
         darkTheme = enabled;
+        gradientCache.clear();
         updateSelectionOverlayPaint();
         barsDirty = true;
         refreshAll();
@@ -359,6 +400,7 @@ public class GanttChartView extends Region {
 
     public void setTaskColorProvider(Function<Task, String> provider) {
         taskColorProvider.set(provider == null ? task -> "#3A7AFE" : provider);
+        gradientCache.clear();
         barsDirty = true;
         drawVisibleBars();
     }
@@ -495,13 +537,13 @@ public class GanttChartView extends Region {
     }
 
     private void rebuildTaskOrder() {
-        orderedTasks = sourceTasks.stream()
-                .sorted(Comparator.comparing(Task::startDate)
-                        .thenComparing(Task::dueDate)
-                        .thenComparing(Task::title))
-                .toList();
+        List<Task> sortedTasks = new ArrayList<>(sourceTasks);
+        sortedTasks.sort(Comparator.comparing(Task::startDate)
+                .thenComparing(Task::dueDate)
+                .thenComparing(Task::title));
+        orderedTasks = sortedTasks;
 
-        Set<String> currentTaskIds = new HashSet<>();
+        Set<String> currentTaskIds = new HashSet<>(Math.max(16, orderedTasks.size() * 2));
         for (Task task : orderedTasks) {
             currentTaskIds.add(task.id());
         }
@@ -525,6 +567,21 @@ public class GanttChartView extends Region {
         }
         pendingEntryAnimationTaskIds.retainAll(currentTaskIds);
 
+        if (!taskBarPool.isEmpty()) {
+            List<String> removedTaskIds = new ArrayList<>();
+            for (String taskId : taskBarPool.keySet()) {
+                if (!currentTaskIds.contains(taskId)) {
+                    removedTaskIds.add(taskId);
+                }
+            }
+            for (String taskId : removedTaskIds) {
+                TaskBar staleBar = taskBarPool.remove(taskId);
+                if (staleBar != null) {
+                    staleBar.dispose();
+                }
+            }
+        }
+
         taskIndexById.clear();
         for (int i = 0; i < orderedTasks.size(); i++) {
             taskIndexById.put(orderedTasks.get(i).id(), i);
@@ -538,8 +595,21 @@ public class GanttChartView extends Region {
             timelineEnd = today.plusDays(30);
             return;
         }
-        LocalDate minStart = orderedTasks.stream().map(Task::startDate).min(LocalDate::compareTo).orElse(today);
-        LocalDate maxDue = orderedTasks.stream().map(Task::dueDate).max(LocalDate::compareTo).orElse(today.plusDays(30));
+        LocalDate minStart = null;
+        LocalDate maxDue = null;
+        for (Task task : orderedTasks) {
+            if (minStart == null || task.startDate().isBefore(minStart)) {
+                minStart = task.startDate();
+            }
+            if (maxDue == null || task.dueDate().isAfter(maxDue)) {
+                maxDue = task.dueDate();
+            }
+        }
+        if (minStart == null || maxDue == null) {
+            timelineStart = today.minusDays(7);
+            timelineEnd = today.plusDays(30);
+            return;
+        }
         timelineStart = minStart.minusDays(5).isBefore(today.minusDays(6)) ? minStart.minusDays(5) : today.minusDays(6);
         timelineEnd = maxDue.plusDays(12).isAfter(today.plusDays(12)) ? maxDue.plusDays(12) : today.plusDays(12);
     }
@@ -754,7 +824,6 @@ public class GanttChartView extends Region {
     }
 
     private void drawMonthHeader(GraphicsContext gc, double width, double xOffset) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM yyyy", uiLocale);
         LocalDate cursor = timelineStart.withDayOfMonth(1);
         while (!cursor.isAfter(timelineEnd)) {
             double x = xForDate(cursor) - xOffset;
@@ -762,14 +831,13 @@ public class GanttChartView extends Region {
                 gc.strokeLine(x, 0, x, HEADER_HEIGHT);
                 gc.setFont(headerPrimaryFont());
                 gc.setFill(headerPrimaryColor());
-                gc.fillText(formatter.format(cursor), x + 4, 21);
+                gc.fillText(cachedHeaderMonthFormatter.format(cursor), x + 4, 21);
             }
             cursor = cursor.plusMonths(1).withDayOfMonth(1);
         }
     }
 
     private void drawYearHeader(GraphicsContext gc, double width, double xOffset) {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy", uiLocale);
         gc.setFont(headerYearFont());
         gc.setFill(headerPrimaryColor());
         LocalDate cursor = timelineStart.withDayOfYear(1);
@@ -780,7 +848,7 @@ public class GanttChartView extends Region {
             double x = xForDate(cursor) - xOffset;
             if (x > -100 && x < width + 20) {
                 gc.strokeLine(x, 0, x, HEADER_HEIGHT);
-                gc.fillText(formatter.format(cursor), x + 6, 22);
+                gc.fillText(cachedHeaderYearFormatter.format(cursor), x + 6, 22);
             }
             cursor = cursor.plusYears(1).withDayOfYear(1);
         }
@@ -803,26 +871,23 @@ public class GanttChartView extends Region {
     }
 
     private String formatHeaderDateLabel(LocalDate date) {
-        if (Locale.SIMPLIFIED_CHINESE.getLanguage().equals(uiLocale.getLanguage())) {
-            return DateTimeFormatter.ofPattern("M月d日", uiLocale).format(date);
-        }
-        return DateTimeFormatter.ofPattern("MMM d", uiLocale).format(date);
+        return cachedHeaderDateFormatter.format(date);
     }
 
     private String formatHeaderWeekdayLabel(LocalDate date) {
-        return DateTimeFormatter.ofPattern("EEE", uiLocale).format(date);
+        return cachedHeaderWeekdayFormatter.format(date);
     }
 
     private Font headerPrimaryFont() {
-        return Font.font(headerFontFamily, FontWeight.SEMI_BOLD, 12);
+        return cachedHeaderPrimaryFont;
     }
 
     private Font headerSecondaryFont() {
-        return Font.font(headerFontFamily, FontWeight.MEDIUM, 10);
+        return cachedHeaderSecondaryFont;
     }
 
     private Font headerYearFont() {
-        return Font.font(headerFontFamily, FontWeight.BOLD, 12);
+        return cachedHeaderYearFont;
     }
 
     private Color headerPrimaryColor() {
@@ -834,9 +899,16 @@ public class GanttChartView extends Region {
     }
 
     private double measureTextWidth(String text, Font font) {
-        Text probe = new Text(text);
-        probe.setFont(font);
-        return probe.getLayoutBounds().getWidth();
+        String key = font.getFamily() + "|" + font.getStyle() + "|" + font.getSize() + "|" + text;
+        Double cached = textWidthCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        textMeasureProbe.setText(text);
+        textMeasureProbe.setFont(font);
+        double width = textMeasureProbe.getLayoutBounds().getWidth();
+        textWidthCache.put(key, width);
+        return width;
     }
 
     private void drawVisibleBars() {
@@ -845,6 +917,12 @@ public class GanttChartView extends Region {
         if (orderedTasks.isEmpty()) {
             if (!taskBarsLayer.getChildren().isEmpty()) {
                 taskBarsLayer.getChildren().clear();
+            }
+            if (!taskBarPool.isEmpty()) {
+                for (TaskBar taskBar : taskBarPool.values()) {
+                    taskBar.dispose();
+                }
+                taskBarPool.clear();
             }
             barsDirty = false;
             lastRenderedFirstIndex = -1;
@@ -871,13 +949,14 @@ public class GanttChartView extends Region {
             return;
         }
 
-        // Freeze root cause: rebuilding bar nodes inside repeated layout passes caused layout/repaint storms.
-        // Fix: only rebuild task bar nodes when either visible range or task-derived styling actually changes.
-        List<Node> nodes = new ArrayList<>(Math.max(0, lastIndex - firstIndex + 1));
+        visibleBarsScratch.clear();
         for (int index = firstIndex; index <= lastIndex; index++) {
-            nodes.add(new TaskBar(orderedTasks.get(index), index));
+            Task task = orderedTasks.get(index);
+            TaskBar bar = taskBarPool.computeIfAbsent(task.id(), id -> new TaskBar());
+            bar.bind(task, index);
+            visibleBarsScratch.add(bar);
         }
-        taskBarsLayer.getChildren().setAll(nodes);
+        taskBarsLayer.getChildren().setAll(visibleBarsScratch);
         barsDirty = false;
         lastRenderedFirstIndex = firstIndex;
         lastRenderedLastIndex = lastIndex;
@@ -936,11 +1015,42 @@ public class GanttChartView extends Region {
     }
 
     private Color safeColor(String value) {
-        try {
-            return Color.web(value);
-        } catch (Exception ignored) {
-            return Color.web("#3A7AFE");
+        String key = value == null ? "" : value.trim();
+        Color cached = colorCache.get(key);
+        if (cached != null) {
+            return cached;
         }
+        Color resolved;
+        try {
+            resolved = Color.web(key);
+        } catch (Exception ignored) {
+            resolved = Color.web("#3A7AFE");
+        }
+        colorCache.put(key, resolved);
+        return resolved;
+    }
+
+    private LinearGradient resolveTaskGradient(Color projectColor) {
+        String key = (darkTheme ? "D:" : "L:") + projectColor.toString();
+        LinearGradient gradient = gradientCache.get(key);
+        if (gradient != null) {
+            return gradient;
+        }
+        Color topColor = darkTheme
+                ? projectColor.deriveColor(0, 1.0, 1.12, 1.0)
+                : projectColor.deriveColor(0, 1.0, 1.02, 1.0);
+        Color bottomColor = darkTheme
+                ? projectColor.deriveColor(0, 1.0, 0.78, 1.0)
+                : projectColor.deriveColor(0, 1.0, 0.88, 1.0);
+        gradient = new LinearGradient(
+                0, 0, 0, 1,
+                true,
+                CycleMethod.NO_CYCLE,
+                new Stop(0.0, topColor),
+                new Stop(1.0, bottomColor)
+        );
+        gradientCache.put(key, gradient);
+        return gradient;
     }
 
     private void resolveHorizontalScrollbar() {
@@ -992,15 +1102,16 @@ public class GanttChartView extends Region {
                     "Microsoft YaHei",
                     "Segoe UI"
             );
-            return;
+        } else {
+            headerFontFamily = pickAvailableFontFamily(
+                    "Inter",
+                    "SF Pro Text",
+                    "Segoe UI",
+                    "Helvetica Neue",
+                    "Arial"
+            );
         }
-        headerFontFamily = pickAvailableFontFamily(
-                "Inter",
-                "SF Pro Text",
-                "Segoe UI",
-                "Helvetica Neue",
-                "Arial"
-        );
+        refreshHeaderRenderingCache();
     }
 
     private String pickAvailableFontFamily(String... candidates) {
@@ -1011,6 +1122,22 @@ public class GanttChartView extends Region {
             }
         }
         return Font.getDefault().getFamily();
+    }
+
+    private void refreshHeaderRenderingCache() {
+        cachedHeaderPrimaryFont = Font.font(headerFontFamily, FontWeight.SEMI_BOLD, 12);
+        cachedHeaderSecondaryFont = Font.font(headerFontFamily, FontWeight.MEDIUM, 10);
+        cachedHeaderYearFont = Font.font(headerFontFamily, FontWeight.BOLD, 12);
+
+        if (Locale.SIMPLIFIED_CHINESE.getLanguage().equals(uiLocale.getLanguage())) {
+            cachedHeaderDateFormatter = DateTimeFormatter.ofPattern("M月d日", uiLocale);
+        } else {
+            cachedHeaderDateFormatter = DateTimeFormatter.ofPattern("MMM d", uiLocale);
+        }
+        cachedHeaderWeekdayFormatter = DateTimeFormatter.ofPattern("EEE", uiLocale);
+        cachedHeaderMonthFormatter = DateTimeFormatter.ofPattern("MMM yyyy", uiLocale);
+        cachedHeaderYearFormatter = DateTimeFormatter.ofPattern("yyyy", uiLocale);
+        textWidthCache.clear();
     }
 
     private boolean isSelectionRecentlyChanged() {
@@ -1068,8 +1195,8 @@ public class GanttChartView extends Region {
     }
 
     private final class TaskBar extends Pane {
-        private final Task task;
-        private final int rowIndex;
+        private Task task;
+        private int rowIndex;
 
         private final Rectangle base = new Rectangle();
         private final Rectangle accent = new Rectangle();
@@ -1091,14 +1218,7 @@ public class GanttChartView extends Region {
         private boolean hovered;
         private boolean selectionAnimationPlayed;
 
-        private TaskBar(Task task, int rowIndex) {
-            this.task = task;
-            this.rowIndex = rowIndex;
-            this.initialStart = task.startDate();
-            this.initialDue = task.dueDate();
-            this.previewStart = task.startDate();
-            this.previewDue = task.dueDate();
-
+        private TaskBar() {
             setManaged(false);
 
             base.setArcWidth(8);
@@ -1122,11 +1242,43 @@ public class GanttChartView extends Region {
             badge.getStyleClass().add("gantt-risk-badge");
 
             getChildren().addAll(criticalOutline, base, accent, leftHandle, rightHandle, label, badge);
-            updateVisual(previewStart, previewDue);
             wireEvents();
+        }
+
+        private void bind(Task task, int rowIndex) {
+            boolean taskChanged = this.task == null || !Objects.equals(this.task.id(), task.id());
+            this.task = task;
+            this.rowIndex = rowIndex;
+            if (dragMode == DragMode.NONE || taskChanged) {
+                this.initialStart = task.startDate();
+                this.initialDue = task.dueDate();
+                this.previewStart = task.startDate();
+                this.previewDue = task.dueDate();
+            }
+            if (taskChanged) {
+                hovered = false;
+                selectionAnimationPlayed = false;
+                dragMode = DragMode.NONE;
+                setCursor(Cursor.DEFAULT);
+            }
             if (pendingEntryAnimationTaskIds.remove(task.id())) {
                 playEntryAnimation();
+            } else {
+                // Reset any transition residue when reusing bars from the pool.
+                setOpacity(1.0);
+                setTranslateY(0.0);
+                setScaleX(1.0);
+                setScaleY(1.0);
             }
+            updateVisual(previewStart, previewDue);
+        }
+
+        private void dispose() {
+            if (tooltip != null) {
+                Tooltip.uninstall(this, tooltip);
+                tooltip = null;
+            }
+            setEffect(null);
         }
 
         private void wireEvents() {
@@ -1155,6 +1307,9 @@ public class GanttChartView extends Region {
             });
 
             setOnMousePressed(event -> {
+                if (task == null) {
+                    return;
+                }
                 if (!editingEnabled) {
                     if (onTaskSelected.get() != null) {
                         onTaskSelected.get().accept(task);
@@ -1173,6 +1328,9 @@ public class GanttChartView extends Region {
             });
 
             setOnMouseDragged(event -> {
+                if (task == null) {
+                    return;
+                }
                 if (!editingEnabled) {
                     return;
                 }
@@ -1203,6 +1361,9 @@ public class GanttChartView extends Region {
             });
 
             setOnMouseReleased(event -> {
+                if (task == null) {
+                    return;
+                }
                 if (!editingEnabled) {
                     return;
                 }
@@ -1215,6 +1376,9 @@ public class GanttChartView extends Region {
             });
 
             setOnMouseClicked(event -> {
+                if (task == null) {
+                    return;
+                }
                 if (onTaskSelected.get() != null) {
                     onTaskSelected.get().accept(task);
                 }
@@ -1244,19 +1408,7 @@ public class GanttChartView extends Region {
             base.setWidth(width);
             base.setHeight(height);
             Color projectColor = safeColor(taskColorProvider.get().apply(task));
-            Color topColor = darkTheme
-                    ? projectColor.deriveColor(0, 1.0, 1.12, 1.0)
-                    : projectColor.deriveColor(0, 1.0, 1.02, 1.0);
-            Color bottomColor = darkTheme
-                    ? projectColor.deriveColor(0, 1.0, 0.78, 1.0)
-                    : projectColor.deriveColor(0, 1.0, 0.88, 1.0);
-            base.setFill(new LinearGradient(
-                    0, 0, 0, 1,
-                    true,
-                    CycleMethod.NO_CYCLE,
-                    new Stop(0.0, topColor),
-                    new Stop(1.0, bottomColor)
-            ));
+            base.setFill(resolveTaskGradient(projectColor));
 
             RiskLevel risk = riskByTaskId.getOrDefault(task.id(), RiskLevel.NONE);
             Color accentColor = switch (risk) {
@@ -1756,6 +1908,7 @@ public class GanttChartView extends Region {
             if (!visible) {
                 if (movementTimeline != null) {
                     movementTimeline.stop();
+                    movementTimeline = null;
                 }
                 currentX = Double.NaN;
                 glowLine.setVisible(false);
@@ -1783,6 +1936,15 @@ public class GanttChartView extends Region {
                 return;
             }
 
+            if (Math.abs(currentX - x) <= GanttChartView.TODAY_INDICATOR_ANIMATION_THRESHOLD_PX) {
+                currentX = x;
+                glowLine.setStartX(x);
+                glowLine.setEndX(x);
+                coreLine.setStartX(x);
+                coreLine.setEndX(x);
+                return;
+            }
+
             if (movementTimeline != null) {
                 movementTimeline.stop();
             }
@@ -1800,6 +1962,7 @@ public class GanttChartView extends Region {
                             new KeyValue(coreLine.endXProperty(), x, Interpolator.EASE_BOTH)
                     )
             );
+            movementTimeline.setOnFinished(event -> movementTimeline = null);
             currentX = x;
             movementTimeline.playFromStart();
         }

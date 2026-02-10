@@ -55,7 +55,6 @@ import javafx.util.StringConverter;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -738,10 +737,10 @@ public class MainView extends BorderPane {
         Platform.runLater(() -> {
             ganttDerivedRefreshQueued = false;
             ganttChartView.setDerivedMetadata(
-                    new HashMap<>(viewModel.riskByTaskIdProperty()),
-                    new HashMap<>(viewModel.conflictMessageByTaskIdProperty()),
-                    new java.util.HashSet<>(viewModel.criticalTaskIdsProperty()),
-                    new HashMap<>(viewModel.slackByTaskIdProperty())
+                    viewModel.riskByTaskIdProperty(),
+                    viewModel.conflictMessageByTaskIdProperty(),
+                    viewModel.criticalTaskIdsProperty(),
+                    viewModel.slackByTaskIdProperty()
             );
         });
     }

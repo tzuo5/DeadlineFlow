@@ -155,6 +155,7 @@ public class MainViewModel {
         allTasks.addListener((javafx.collections.ListChangeListener<? super Task>) change -> {
             if (handlingTaskListChange) {
                 debugModel("listener: allTasks re-entrant change coalesced");
+                refreshProjectFilters();
                 scheduleDerivedStateRecompute("tasks-listener-reentrant");
                 return;
             }
@@ -164,6 +165,7 @@ public class MainViewModel {
                 if (selectedTask.get() != null && findTask(selectedTask.get().id()).isEmpty()) {
                     selectedTask.set(null);
                 }
+                refreshProjectFilters();
                 scheduleDerivedStateRecompute("tasks-listener");
             } finally {
                 handlingTaskListChange = false;
@@ -611,13 +613,16 @@ public class MainViewModel {
             return;
         }
 
+        Set<String> projectTaskIds = new HashSet<>();
+        for (Task task : allTasks) {
+            if (task.projectId() == project.id()) {
+                projectTaskIds.add(task.id());
+            }
+        }
+
         projectTasks.setPredicate(task -> task.projectId() == project.id());
-        projectDependencies.setPredicate(dependency -> {
-            Optional<Task> fromTask = findTask(dependency.fromTaskId());
-            Optional<Task> toTask = findTask(dependency.toTaskId());
-            return fromTask.filter(task -> task.projectId() == project.id()).isPresent()
-                    && toTask.filter(task -> task.projectId() == project.id()).isPresent();
-        });
+        projectDependencies.setPredicate(dependency ->
+                projectTaskIds.contains(dependency.fromTaskId()) && projectTaskIds.contains(dependency.toTaskId()));
     }
 
     private void refreshStatusOptions() {
@@ -733,7 +738,7 @@ public class MainViewModel {
             return List.of();
         }
 
-        List<Task> active = new ArrayList<>();
+        List<Task> active = new ArrayList<>(allTasks.size());
         for (Task task : allTasks) {
             if (task.projectId() == project.id()) {
                 active.add(task);
@@ -746,12 +751,12 @@ public class MainViewModel {
         if (activeTasks.isEmpty()) {
             return List.of();
         }
-        Set<String> activeTaskIds = new HashSet<>();
+        Set<String> activeTaskIds = new HashSet<>(Math.max(16, activeTasks.size() * 2));
         for (Task task : activeTasks) {
             activeTaskIds.add(task.id());
         }
 
-        List<Dependency> active = new ArrayList<>();
+        List<Dependency> active = new ArrayList<>(Math.min(allDependencies.size(), activeTaskIds.size() * 2));
         for (Dependency dependency : allDependencies) {
             if (activeTaskIds.contains(dependency.fromTaskId()) && activeTaskIds.contains(dependency.toTaskId())) {
                 active.add(dependency);
@@ -763,14 +768,9 @@ public class MainViewModel {
     private DerivedStateResult computeDerivedState(Collection<Task> activeTasks, Collection<Dependency> activeDependencies, LocalDate today) {
         List<Conflict> detectedConflicts = conflictService.detectDependencyConflicts(activeTasks, activeDependencies);
 
-        Map<String, String> conflictMap = new HashMap<>();
+        Map<String, String> conflictMap = new HashMap<>(Math.max(16, detectedConflicts.size() * 2));
         for (Conflict conflict : detectedConflicts) {
             conflictMap.merge(conflict.toTaskId(), conflict.message(), (a, b) -> a + "\n" + b);
-        }
-
-        Map<String, RiskLevel> riskMap = new HashMap<>();
-        for (Task task : activeTasks) {
-            riskMap.put(task.id(), riskService.evaluate(task, today, DONE_STATUS));
         }
 
         CriticalPathResult cpm = criticalPathService.compute(activeTasks, activeDependencies);
@@ -779,39 +779,40 @@ public class MainViewModel {
         Set<String> criticalIds = cpm.hasCycle() ? Set.of() : new HashSet<>(cpm.criticalTaskIds());
         Map<String, Integer> slackMap = cpm.hasCycle() ? Map.of() : new HashMap<>(cpm.slackDays());
 
-        List<Task> dueTodayTasks = sorted(activeTasks.stream()
-                .filter(task -> !isDone(task) && task.dueDate().isEqual(today))
-                .toList());
-
-        List<Task> dueInSevenTasks = sorted(activeTasks.stream()
-                .filter(task -> !isDone(task)
-                        && task.dueDate().isAfter(today)
-                        && !task.dueDate().isAfter(today.plusDays(7)))
-                .toList());
-
-        List<Task> overdueTasks = sorted(activeTasks.stream()
-                .filter(task -> !isDone(task) && task.dueDate().isBefore(today))
-                .toList());
-
-        Map<String, Task> taskById = new HashMap<>();
+        Map<String, Task> taskById = new HashMap<>(Math.max(16, activeTasks.size() * 2));
+        Map<String, RiskLevel> riskMap = new HashMap<>(Math.max(16, activeTasks.size() * 2));
+        List<Task> dueTodayTasks = new ArrayList<>();
+        List<Task> dueInSevenTasks = new ArrayList<>();
+        List<Task> overdueTasks = new ArrayList<>();
+        LocalDate todayPlusSeven = today.plusDays(7);
         for (Task task : activeTasks) {
             taskById.put(task.id(), task);
+            riskMap.put(task.id(), riskService.evaluate(task, today, DONE_STATUS));
+            if (isDone(task)) {
+                continue;
+            }
+            LocalDate dueDate = task.dueDate();
+            if (dueDate.isEqual(today)) {
+                dueTodayTasks.add(task);
+            } else if (dueDate.isBefore(today)) {
+                overdueTasks.add(task);
+            } else if (!dueDate.isAfter(todayPlusSeven)) {
+                dueInSevenTasks.add(task);
+            }
         }
 
-        Set<String> blocked = new HashSet<>();
+        Set<String> blockedTaskIds = new HashSet<>();
         for (Dependency dependency : activeDependencies) {
             Task from = taskById.get(dependency.fromTaskId());
             Task to = taskById.get(dependency.toTaskId());
-            if (from == null || to == null) {
+            if (from == null || to == null || isDone(to) || isDone(from)) {
                 continue;
             }
-            if (!isDone(to) && !isDone(from)) {
-                blocked.add(to.id());
-            }
+            blockedTaskIds.add(to.id());
         }
 
-        List<Task> blockedTasks = new ArrayList<>();
-        for (String taskId : blocked) {
+        List<Task> blockedTasks = new ArrayList<>(blockedTaskIds.size());
+        for (String taskId : blockedTaskIds) {
             Task task = taskById.get(taskId);
             if (task != null) {
                 blockedTasks.add(task);
@@ -826,9 +827,9 @@ public class MainViewModel {
                 finishDate,
                 criticalIds,
                 slackMap,
-                dueTodayTasks,
-                dueInSevenTasks,
-                overdueTasks,
+                sorted(dueTodayTasks),
+                sorted(dueInSevenTasks),
+                sorted(overdueTasks),
                 sorted(blockedTasks)
         );
     }

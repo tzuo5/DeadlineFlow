@@ -15,12 +15,12 @@ public class ConflictService {
     public static final int FINISH_START_LAG_DAYS = 1;
 
     public List<Conflict> detectDependencyConflicts(Collection<Task> tasks, Collection<Dependency> dependencies) {
-        Map<String, Task> taskById = new HashMap<>();
+        Map<String, Task> taskById = new HashMap<>(Math.max(16, tasks.size() * 2));
         for (Task task : tasks) {
             taskById.put(task.id(), task);
         }
 
-        List<Conflict> conflicts = new ArrayList<>();
+        List<Conflict> conflicts = new ArrayList<>(Math.min(dependencies.size(), taskById.size()));
         DateTimeFormatter formatter = DateTimeFormatter.ISO_LOCAL_DATE;
         for (Dependency dependency : dependencies) {
             Task fromTask = taskById.get(dependency.fromTaskId());
@@ -29,13 +29,14 @@ public class ConflictService {
                 continue;
             }
 
-            if (toTask.startDate().isBefore(fromTask.dueDate().plusDays(FINISH_START_LAG_DAYS))) {
+            var requiredStartDate = fromTask.dueDate().plusDays(FINISH_START_LAG_DAYS);
+            if (toTask.startDate().isBefore(requiredStartDate)) {
                 String message = "Dependency violation: '"
                         + toTask.title()
                         + "' starts "
                         + formatter.format(toTask.startDate())
                         + ", must start on or after "
-                        + formatter.format(fromTask.dueDate().plusDays(FINISH_START_LAG_DAYS))
+                        + formatter.format(requiredStartDate)
                         + " because it depends on '"
                         + fromTask.title()
                         + "'.";

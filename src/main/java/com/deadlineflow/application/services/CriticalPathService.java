@@ -30,18 +30,21 @@ public class CriticalPathService {
             return CriticalPathResult.cycle(topologyResult.cycleTaskIds());
         }
 
-        Map<String, Task> taskById = new HashMap<>();
+        int taskCount = tasks.size();
+        Map<String, Task> taskById = new HashMap<>(Math.max(16, taskCount * 2));
+        LocalDate projectStart = null;
         for (Task task : tasks) {
             taskById.put(task.id(), task);
+            if (projectStart == null || task.startDate().isBefore(projectStart)) {
+                projectStart = task.startDate();
+            }
+        }
+        if (projectStart == null) {
+            return CriticalPathResult.empty();
         }
 
-        LocalDate projectStart = tasks.stream()
-                .map(Task::startDate)
-                .min(LocalDate::compareTo)
-                .orElseThrow();
-
-        Map<String, List<String>> predecessors = new HashMap<>();
-        Map<String, List<String>> successors = new HashMap<>();
+        Map<String, List<String>> predecessors = new HashMap<>(Math.max(16, taskCount * 2));
+        Map<String, List<String>> successors = new HashMap<>(Math.max(16, taskCount * 2));
         for (Task task : tasks) {
             predecessors.put(task.id(), new ArrayList<>());
             successors.put(task.id(), new ArrayList<>());
@@ -55,8 +58,9 @@ public class CriticalPathService {
             successors.get(dependency.fromTaskId()).add(dependency.toTaskId());
         }
 
-        Map<String, Integer> earliestStart = new HashMap<>();
-        Map<String, Integer> earliestFinish = new HashMap<>();
+        Map<String, Integer> earliestStart = new HashMap<>(Math.max(16, taskCount * 2));
+        Map<String, Integer> earliestFinish = new HashMap<>(Math.max(16, taskCount * 2));
+        int projectFinishOffset = 0;
 
         for (String taskId : topologyResult.orderedTaskIds()) {
             Task task = taskById.get(taskId);
@@ -71,12 +75,13 @@ public class CriticalPathService {
             int finish = earliest + duration - 1;
             earliestStart.put(taskId, earliest);
             earliestFinish.put(taskId, finish);
+            if (finish > projectFinishOffset) {
+                projectFinishOffset = finish;
+            }
         }
 
-        int projectFinishOffset = earliestFinish.values().stream().mapToInt(Integer::intValue).max().orElse(0);
-
-        Map<String, Integer> latestStart = new HashMap<>();
-        Map<String, Integer> latestFinish = new HashMap<>();
+        Map<String, Integer> latestStart = new HashMap<>(Math.max(16, taskCount * 2));
+        Map<String, Integer> latestFinish = new HashMap<>(Math.max(16, taskCount * 2));
         List<String> reverseOrder = new ArrayList<>(topologyResult.orderedTaskIds());
         java.util.Collections.reverse(reverseOrder);
 
@@ -89,10 +94,15 @@ public class CriticalPathService {
             if (next.isEmpty()) {
                 lf = projectFinishOffset;
             } else {
-                lf = next.stream()
-                        .mapToInt(successorId -> latestStart.get(successorId) - 1)
-                        .min()
-                        .orElse(projectFinishOffset);
+                int minLatestStartMinusOne = Integer.MAX_VALUE;
+                for (String successorId : next) {
+                    Integer successorLatestStart = latestStart.get(successorId);
+                    if (successorLatestStart == null) {
+                        continue;
+                    }
+                    minLatestStartMinusOne = Math.min(minLatestStartMinusOne, successorLatestStart - 1);
+                }
+                lf = minLatestStartMinusOne == Integer.MAX_VALUE ? projectFinishOffset : minLatestStartMinusOne;
             }
 
             int ls = lf - duration + 1;
@@ -100,8 +110,8 @@ public class CriticalPathService {
             latestStart.put(taskId, ls);
         }
 
-        Map<String, Integer> slackDays = new HashMap<>();
-        Set<String> criticalTaskIds = new HashSet<>();
+        Map<String, Integer> slackDays = new HashMap<>(Math.max(16, taskCount * 2));
+        Set<String> criticalTaskIds = new HashSet<>(Math.max(16, taskCount * 2));
         for (String taskId : topologyResult.orderedTaskIds()) {
             int slack = latestStart.get(taskId) - earliestStart.get(taskId);
             slackDays.put(taskId, slack);
