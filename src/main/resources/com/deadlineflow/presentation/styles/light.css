@@ -1,0 +1,37 @@
+.root {
+    -df-bg: #F6F7FB;
+    -df-card: #FFFFFF;
+    -df-control-bg: #FFFFFF;
+    -df-control-hover: #F2F6FF;
+    -df-control-pressed: #E8F0FF;
+    -df-border: rgba(17, 24, 39, 0.10);
+    -df-shadow: rgba(17, 24, 39, 0.08);
+    -df-shadow-strong: rgba(17, 24, 39, 0.16);
+
+    -df-text-primary: #111827;
+    -df-text-secondary: rgba(17, 24, 39, 0.78);
+    -df-text-muted: rgba(17, 24, 39, 0.62);
+    -df-text-placeholder: rgba(17, 24, 39, 0.45);
+
+    -df-accent: #2563EB;
+    -df-accent-hover: #1D4ED8;
+    -df-accent-pressed: #1E40AF;
+    -df-accent-soft: rgba(37, 99, 235, 0.22);
+    -df-focus: #3B82F6;
+
+    -df-danger: #EF4444;
+    -df-danger-soft: rgba(239, 68, 68, 0.12);
+    -df-danger-soft-hover: rgba(239, 68, 68, 0.18);
+
+    -df-pill-bg: rgba(239, 68, 68, 0.14);
+    -df-pill-fg: #B91C1C;
+
+    -df-selection-bg: rgba(37, 99, 235, 0.16);
+    -df-selection-fg: #0F172A;
+    -df-slider-track: rgba(17, 24, 39, 0.16);
+
+    -df-banner-bg: #EEF5FF;
+    -df-banner-fg: #1E3A8A;
+    -df-banner-error-bg: #FEECEC;
+    -df-banner-error-fg: #B91C1C;
+}

@@ -1,0 +1,362 @@
+.root {
+    -fx-font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    -fx-font-size: 13px;
+    -fx-background-color: -df-bg;
+    -fx-accent: -df-accent;
+    -fx-focus-color: -df-focus;
+    -fx-faint-focus-color: transparent;
+}
+
+.main-root {
+    -fx-background-color: -df-bg;
+}
+
+.toolbar-shell {
+    -fx-spacing: 8;
+}
+
+.toolbar-row {
+    -fx-min-height: 54;
+    -fx-pref-height: 54;
+    -fx-alignment: center-left;
+}
+
+.status-banner {
+    -fx-background-color: -df-banner-bg;
+    -fx-text-fill: -df-banner-fg;
+    -fx-background-radius: 12;
+    -fx-padding: 10 12 10 12;
+    -fx-font-weight: 500;
+}
+
+.status-banner-error {
+    -fx-background-color: -df-banner-error-bg;
+    -fx-text-fill: -df-banner-error-fg;
+}
+
+.board-column {
+    -fx-spacing: 12;
+}
+
+.panel-card {
+    -fx-background-color: -df-card;
+    -fx-border-color: -df-border;
+    -fx-border-width: 1;
+    -fx-border-radius: 14;
+    -fx-background-radius: 14;
+    -fx-effect: dropshadow(gaussian, -df-shadow, 8, 0.14, 0, 1);
+}
+
+.sidebar-card {
+    -fx-padding: 14;
+}
+
+.timeline-card {
+    -fx-padding: 0;
+}
+
+.inspector-card {
+    -fx-padding: 14;
+}
+
+.section-title {
+    -fx-font-size: 16px;
+    -fx-font-weight: 600;
+    -fx-text-fill: -df-text-primary;
+}
+
+.summary-row {
+    -fx-spacing: 12;
+}
+
+.summary-card {
+    -fx-padding: 12;
+    -fx-spacing: 8;
+}
+
+.summary-title {
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+    -fx-text-fill: -df-text-muted;
+}
+
+.summary-list {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 0;
+    -fx-focus-traversable: false;
+}
+
+.summary-list .virtual-flow {
+    -fx-background-color: transparent;
+}
+
+.summary-list .scroll-bar {
+    -fx-opacity: 0.65;
+}
+
+.summary-list .list-cell {
+    -fx-background-color: transparent;
+    -fx-text-fill: -df-text-secondary;
+    -fx-padding: 4 0 4 0;
+}
+
+.summary-list .list-cell:filled:selected,
+.summary-list .list-cell:filled:selected:focused {
+    -fx-background-color: transparent;
+}
+
+.summary-item-label {
+    -fx-text-fill: -df-text-secondary;
+    -fx-font-size: 12px;
+}
+
+.summary-pill {
+    -fx-background-color: -df-pill-bg;
+    -fx-text-fill: -df-pill-fg;
+    -fx-background-radius: 999;
+    -fx-padding: 4 10 4 10;
+    -fx-font-weight: 500;
+}
+
+.project-list-view,
+.dependency-list-view,
+.list-view {
+    -fx-background-color: -df-control-bg;
+    -fx-border-color: -df-border;
+    -fx-border-radius: 12;
+    -fx-background-radius: 12;
+    -fx-padding: 4;
+}
+
+.list-view .virtual-flow {
+    -fx-background-color: transparent;
+}
+
+.list-cell {
+    -fx-background-color: transparent;
+    -fx-text-fill: -df-text-secondary;
+    -fx-padding: 8 8 8 8;
+}
+
+.list-cell:filled:selected,
+.list-cell:filled:selected:focused {
+    -fx-background-color: -df-selection-bg;
+    -fx-background-radius: 10;
+    -fx-text-fill: -df-selection-fg;
+}
+
+.project-item-label {
+    -fx-text-fill: -df-text-primary;
+}
+
+.field-label {
+    -fx-font-size: 12px;
+    -fx-font-weight: 500;
+    -fx-text-fill: -df-text-muted;
+}
+
+.muted-label {
+    -fx-font-size: 12px;
+    -fx-font-weight: 500;
+    -fx-text-fill: -df-text-muted;
+}
+
+.finish-date-label {
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+    -fx-text-fill: -df-text-muted;
+}
+
+.segmented-control {
+    -fx-background-color: -df-control-bg;
+    -fx-border-color: -df-border;
+    -fx-border-radius: 999;
+    -fx-background-radius: 999;
+    -fx-padding: 2;
+    -fx-spacing: 2;
+}
+
+.segmented-button {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-background-radius: 999;
+    -fx-border-radius: 999;
+    -fx-padding: 5 12 5 12;
+    -fx-font-weight: 600;
+    -fx-text-fill: -df-text-muted;
+}
+
+.segmented-button:hover {
+    -fx-background-color: -df-control-hover;
+    -fx-text-fill: -df-text-primary;
+}
+
+.segmented-button:selected {
+    -fx-background-color: -df-accent;
+    -fx-text-fill: white;
+}
+
+.pill-button,
+.button {
+    -fx-background-color: -df-control-bg;
+    -fx-border-color: -df-border;
+    -fx-border-radius: 11;
+    -fx-background-radius: 11;
+    -fx-padding: 7 12 7 12;
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+    -fx-text-fill: -df-text-primary;
+    -fx-cursor: hand;
+}
+
+/* Ensure intentionally disabled controls are visually obvious and non-interactive-looking. */
+.button:disabled,
+.combo-box:disabled,
+.date-picker:disabled,
+.text-field:disabled,
+.text-area:disabled,
+.slider:disabled,
+.list-view:disabled {
+    -fx-opacity: 0.45;
+}
+
+.button:disabled,
+.combo-box:disabled,
+.date-picker:disabled,
+.text-field:disabled,
+.text-area:disabled,
+.slider:disabled {
+    -fx-cursor: default;
+}
+
+.pill-button:hover,
+.button:hover {
+    -fx-background-color: -df-control-hover;
+}
+
+.pill-button:pressed,
+.button:pressed {
+    -fx-background-color: -df-control-pressed;
+}
+
+.primary-button {
+    -fx-background-color: -df-accent;
+    -fx-border-color: -df-accent;
+    -fx-text-fill: white;
+}
+
+.primary-button:hover {
+    -fx-background-color: -df-accent-hover;
+}
+
+.primary-button:pressed {
+    -fx-background-color: -df-accent-pressed;
+}
+
+.danger-button {
+    -fx-background-color: -df-danger-soft;
+    -fx-border-color: -df-danger-soft;
+    -fx-text-fill: -df-danger;
+}
+
+.danger-button:hover {
+    -fx-background-color: -df-danger-soft-hover;
+}
+
+.text-field,
+.text-area,
+.combo-box,
+.date-picker,
+.spinner,
+.choice-box {
+    -fx-background-color: -df-control-bg;
+    -fx-border-color: -df-border;
+    -fx-border-radius: 11;
+    -fx-background-radius: 11;
+    -fx-text-fill: -df-text-primary;
+    -fx-prompt-text-fill: -df-text-placeholder;
+    -fx-highlight-fill: -df-accent-soft;
+    -fx-highlight-text-fill: -df-text-primary;
+}
+
+.text-area .content {
+    -fx-background-color: -df-control-bg;
+    -fx-border-color: transparent;
+    -fx-background-radius: 10;
+}
+
+.combo-box .list-cell,
+.date-picker .text-field {
+    -fx-text-fill: -df-text-primary;
+}
+
+.combo-box-popup .list-view {
+    -fx-background-color: -df-card;
+    -fx-border-color: -df-border;
+}
+
+.combo-box-popup .list-cell {
+    -fx-text-fill: -df-text-primary;
+}
+
+.combo-box-popup .list-cell:hover {
+    -fx-background-color: -df-selection-bg;
+}
+
+.text-field:focused,
+.text-area:focused,
+.combo-box:focused,
+.date-picker:focused {
+    -fx-border-color: -df-focus;
+    -fx-border-width: 1.2;
+}
+
+.date-picker .arrow-button,
+.combo-box .arrow-button {
+    -fx-background-color: transparent;
+}
+
+.date-picker .arrow,
+.combo-box .arrow {
+    -fx-background-color: -df-text-muted;
+}
+
+.slider .track {
+    -fx-background-color: -df-slider-track;
+    -fx-background-radius: 999;
+    -fx-pref-height: 4;
+}
+
+.slider .thumb {
+    -fx-background-color: -df-accent;
+    -fx-background-radius: 999;
+    -fx-pref-width: 14;
+    -fx-pref-height: 14;
+    -fx-effect: dropshadow(gaussian, -df-shadow-strong, 5, 0.25, 0, 1);
+}
+
+.gantt-chart {
+    -fx-background-color: transparent;
+    -fx-background-radius: 12;
+}
+
+.gantt-scroll {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+}
+
+.gantt-bar-label {
+    -fx-font-size: 10.5px;
+    -fx-font-weight: 600;
+    -fx-text-fill: white;
+}
+
+.gantt-risk-badge {
+    -fx-font-size: 8px;
+    -fx-font-weight: 700;
+    -fx-text-fill: white;
+    -fx-background-color: -df-danger;
+    -fx-background-radius: 99;
+    -fx-padding: 0 4 0 4;
+}

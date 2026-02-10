@@ -1,0 +1,50 @@
+.root {
+    -df-bg: #0F172A;
+    -df-card: #111C2E;
+    -df-control-bg: #17243A;
+    -df-control-hover: #1E2F49;
+    -df-control-pressed: #223654;
+    -df-border: rgba(229, 231, 235, 0.14);
+    -df-shadow: rgba(0, 0, 0, 0.34);
+    -df-shadow-strong: rgba(0, 0, 0, 0.52);
+
+    -df-text-primary: #E5E7EB;
+    -df-text-secondary: rgba(229, 231, 235, 0.84);
+    -df-text-muted: rgba(229, 231, 235, 0.70);
+    -df-text-placeholder: rgba(229, 231, 235, 0.48);
+
+    -df-accent: #60A5FA;
+    -df-accent-hover: #3B82F6;
+    -df-accent-pressed: #2563EB;
+    -df-accent-soft: rgba(96, 165, 250, 0.26);
+    -df-focus: #93C5FD;
+
+    -df-danger: #F87171;
+    -df-danger-soft: rgba(248, 113, 113, 0.18);
+    -df-danger-soft-hover: rgba(248, 113, 113, 0.25);
+
+    -df-pill-bg: rgba(248, 113, 113, 0.20);
+    -df-pill-fg: #FCA5A5;
+
+    -df-selection-bg: rgba(96, 165, 250, 0.26);
+    -df-selection-fg: #F8FAFC;
+    -df-slider-track: rgba(229, 231, 235, 0.24);
+
+    -df-banner-bg: rgba(96, 165, 250, 0.15);
+    -df-banner-fg: #BFDBFE;
+    -df-banner-error-bg: rgba(248, 113, 113, 0.18);
+    -df-banner-error-fg: #FECACA;
+}
+
+.text-area .content,
+.combo-box-popup .list-view,
+.date-picker-popup {
+    -fx-background-color: -df-control-bg;
+}
+
+.combo-box-popup .list-cell:filled:selected,
+.combo-box-popup .list-cell:filled:selected:focused,
+.list-cell:filled:selected,
+.list-cell:filled:selected:focused {
+    -fx-text-fill: -df-selection-fg;
+}
