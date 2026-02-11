@@ -11,10 +11,6 @@
     -fx-background-color: -df-bg;
 }
 
-.main-root.lang-zh {
-    -fx-font-family: "PingFang SC", "HarmonyOS Sans SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
-}
-
 .toolbar-shell {
     -fx-spacing: 8;
 }

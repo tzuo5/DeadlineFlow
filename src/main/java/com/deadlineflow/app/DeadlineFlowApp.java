@@ -18,10 +18,14 @@ public class DeadlineFlowApp extends Application {
         Scene scene = new Scene(mainView, 1520, 900);
         appContext.themeManager().apply(scene);
 
-        stage.setTitle("DeadlineFlow — Visual Deadline Planner");
+        stage.setTitle("Deadline Killer");
         stage.setMinWidth(1200);
         stage.setMinHeight(760);
         stage.setScene(scene);
+        stage.setOnHidden(event -> {
+            mainView.dispose();
+            appContext.mainViewModel().shutdown();
+        });
         stage.show();
     }
 

@@ -47,7 +47,6 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.Rectangle;
-import javafx.scene.text.Font;
 import javafx.stage.Window;
 import javafx.util.Duration;
 import javafx.util.StringConverter;
@@ -55,10 +54,12 @@ import javafx.util.StringConverter;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 public class MainView extends BorderPane {
     private static final boolean NEW_TASK_DIALOG_DEBUG = Boolean.getBoolean("deadlineflow.debug.newtaskdialog");
@@ -66,9 +67,7 @@ public class MainView extends BorderPane {
     private static final double MAX_ZOOM = 4.0;
     private static final Duration PROJECTS_SIDEBAR_ANIMATION_DURATION = Duration.millis(200);
     private static final Duration TASK_INSPECTOR_SIDEBAR_ANIMATION_DURATION = Duration.millis(200);
-    private static final String FONT_WARNING_PREFIX = "[font-warning] ";
-    private static final String FONT_WARNING_MESSAGE = FONT_WARNING_PREFIX
-            + "Chinese font missing. Install one of: Noto Sans SC / PingFang SC / Microsoft YaHei UI / HarmonyOS Sans SC.";
+    private static final DateTimeFormatter UI_DATE_FORMATTER = DateTimeFormatter.ofPattern("MMM d, yyyy");
 
     private final MainViewModel viewModel;
     private final LanguageManager i18n;
@@ -83,6 +82,7 @@ public class MainView extends BorderPane {
     private final StackPane taskInspectorHost = new StackPane(taskInspectorView);
     private final Rectangle taskInspectorClip = new Rectangle();
     private final GanttChartView ganttChartView = new GanttChartView();
+    private final Map<Long, Integer> projectTaskCounts = new HashMap<>();
 
     private final VBox centerColumn = new VBox();
     private final HBox workspaceRow = new HBox();
@@ -132,7 +132,6 @@ public class MainView extends BorderPane {
         wireTaskInspector();
         wireGantt();
         wireDerivedState();
-        wireLocalization();
         applyTranslations();
         updateProjectActionState(viewModel.selectedProjectProperty().get());
         refreshInspector(viewModel.selectedTaskProperty().get());
@@ -212,14 +211,6 @@ public class MainView extends BorderPane {
 
         topBarView.addTaskButton().setOnAction(event -> createTaskFromToolbar());
 
-        topBarView.languageComboBox().getItems().setAll(LanguageManager.Language.CHINESE, LanguageManager.Language.ENGLISH);
-        topBarView.languageComboBox().setValue(i18n.language());
-        topBarView.languageComboBox().valueProperty().addListener((obs, oldValue, newValue) -> {
-            if (newValue != null) {
-                i18n.setLanguage(newValue);
-            }
-        });
-
         configureThemeComboBox();
     }
 
@@ -274,8 +265,23 @@ public class MainView extends BorderPane {
     }
 
     private void configureProjectSidebar() {
+        rebuildProjectTaskCounts();
         projectsSidebarView.projectListView().setItems(viewModel.projects());
         projectsSidebarView.projectListView().setCellFactory(listView -> new ListCell<>() {
+            private final Circle dot = new Circle(5);
+            private final Label label = new Label();
+            private final Label count = new Label();
+            private final Region spacer = new Region();
+            private final HBox row = new HBox(8, dot, label, spacer, count);
+
+            {
+                dot.getStyleClass().add("project-dot");
+                label.getStyleClass().add("project-item-label");
+                count.getStyleClass().add("project-count-badge");
+                row.setAlignment(Pos.CENTER_LEFT);
+                HBox.setHgrow(spacer, Priority.ALWAYS);
+            }
+
             @Override
             protected void updateItem(Project project, boolean empty) {
                 super.updateItem(project, empty);
@@ -285,23 +291,22 @@ public class MainView extends BorderPane {
                     setCursor(Cursor.DEFAULT);
                     return;
                 }
-                Circle dot = new Circle(5, safeColor(project.color()));
-                dot.getStyleClass().add("project-dot");
-                Label label = new Label(project.name());
-                label.getStyleClass().add("project-item-label");
-                Label count = new Label(String.valueOf(viewModel.taskCountForProject(project.id())));
-                count.getStyleClass().add("project-count-badge");
-                Region spacer = new Region();
-                HBox.setHgrow(spacer, Priority.ALWAYS);
-                HBox row = new HBox(8, dot, label, spacer, count);
-                row.setAlignment(Pos.CENTER_LEFT);
+                dot.setFill(safeColor(project.color()));
+                label.setText(project.name());
+                count.setText(String.valueOf(projectTaskCounts.getOrDefault(project.id(), 0)));
                 setCursor(Cursor.HAND);
                 setGraphic(row);
                 setText(null);
             }
         });
-        viewModel.allTasks().addListener((ListChangeListener<? super Task>) change ->
-                projectsSidebarView.projectListView().refresh());
+        viewModel.allTasks().addListener((ListChangeListener<? super Task>) change -> {
+            rebuildProjectTaskCounts();
+            projectsSidebarView.projectListView().refresh();
+        });
+        viewModel.projects().addListener((ListChangeListener<? super Project>) change -> {
+            rebuildProjectTaskCounts();
+            projectsSidebarView.projectListView().refresh();
+        });
 
         projectsSidebarView.addProjectButton().setOnAction(event -> {
             Optional<ProjectDialog.Result> result = ProjectDialog.show(getWindow(), null);
@@ -429,8 +434,7 @@ public class MainView extends BorderPane {
         themeManager.effectiveThemeProperty().addListener((obs, oldValue, newValue) ->
                 ganttChartView.setDarkTheme(newValue == ThemeManager.ThemeMode.DARK));
         ganttChartView.setDarkTheme(themeManager.effectiveTheme() == ThemeManager.ThemeMode.DARK);
-        ganttChartView.setLocale(i18n.language().locale());
-        ganttChartView.setChineseTypography(i18n.language() == LanguageManager.Language.CHINESE);
+        ganttChartView.setLocale(i18n.locale());
     }
 
     private void wireProjectSelection() {
@@ -745,17 +749,6 @@ public class MainView extends BorderPane {
         });
     }
 
-    private void wireLocalization() {
-        i18n.languageProperty().addListener((obs, oldValue, newValue) -> {
-            if (topBarView.languageComboBox().getValue() != newValue) {
-                topBarView.languageComboBox().setValue(newValue);
-            }
-            ganttChartView.setLocale(newValue.locale());
-            ganttChartView.setChineseTypography(newValue == LanguageManager.Language.CHINESE);
-            applyTranslations();
-        });
-    }
-
     private void applyTranslations() {
         topBarView.scaleLabel().setText(i18n.t("scale"));
         topBarView.hourButton().setText(i18n.t("hour"));
@@ -763,7 +756,6 @@ public class MainView extends BorderPane {
         topBarView.weekButton().setText(i18n.t("week"));
         topBarView.yearButton().setText(i18n.t("year"));
         topBarView.zoomLabel().setText(i18n.t("zoom"));
-        topBarView.languageLabel().setText(i18n.t("language"));
         topBarView.themeLabel().setText(i18n.t("theme"));
         topBarView.projectsToggleButton().setText(i18n.t("projects"));
         topBarView.inspectorToggleButton().setText(i18n.t("task_inspector"));
@@ -806,8 +798,6 @@ public class MainView extends BorderPane {
             topBarView.themeComboBox().setValue(null);
             topBarView.themeComboBox().setValue(selectedTheme);
         }
-
-        applyLanguageTypography();
     }
 
     private void createTaskFromToolbar() {
@@ -927,6 +917,12 @@ public class MainView extends BorderPane {
 
     private ListCell<String> buildStatusCell() {
         return new ListCell<>() {
+            private final Label chip = new Label();
+
+            {
+                chip.getStyleClass().add("status-chip");
+            }
+
             @Override
             protected void updateItem(String status, boolean empty) {
                 super.updateItem(status, empty);
@@ -936,13 +932,37 @@ public class MainView extends BorderPane {
                     return;
                 }
                 StatusColorManager.StatusTone tone = statusColorManager.toneForStatus(status, false);
-                Label chip = new Label(statusColorManager.displayStatus(status));
-                chip.getStyleClass().add("status-chip");
+                chip.setText(statusColorManager.displayStatus(status));
                 chip.setStyle(statusColorManager.chipStyle(tone));
                 setGraphic(chip);
                 setText(null);
             }
         };
+    }
+
+    private void rebuildProjectTaskCounts() {
+        projectTaskCounts.clear();
+        for (Task task : viewModel.allTasks()) {
+            projectTaskCounts.merge(task.projectId(), 1, Integer::sum);
+        }
+    }
+
+    public void dispose() {
+        if (projectsSidebarTimeline != null) {
+            projectsSidebarTimeline.stop();
+        }
+        if (taskInspectorTimeline != null) {
+            taskInspectorTimeline.stop();
+        }
+        topBarView.bannerLabel().textProperty().unbind();
+        topBarView.bannerLabel().visibleProperty().unbind();
+        topBarView.bannerLabel().managedProperty().unbind();
+        topBarView.cpmBanner().textProperty().unbind();
+        topBarView.cpmBanner().visibleProperty().unbind();
+        topBarView.cpmBanner().managedProperty().unbind();
+        ganttChartView.scaleProperty().unbind();
+        ganttChartView.zoomProperty().unbind();
+        ganttChartView.dispose();
     }
 
     private void navigateToTask(Task task) {
@@ -959,39 +979,6 @@ public class MainView extends BorderPane {
             return;
         }
         taskInspectorView.inspectorTitleLabel().setText(inspectorTitleText + " · " + task.title());
-    }
-
-    private void applyLanguageTypography() {
-        getStyleClass().remove("lang-zh");
-        if (i18n.language() == LanguageManager.Language.CHINESE) {
-            getStyleClass().add("lang-zh");
-            if (!hasPreferredChineseFont()) {
-                if (!FONT_WARNING_MESSAGE.equals(viewModel.bannerMessageProperty().get())) {
-                    viewModel.bannerMessageProperty().set(FONT_WARNING_MESSAGE);
-                }
-            } else if (isFontWarning(viewModel.bannerMessageProperty().get())) {
-                viewModel.bannerMessageProperty().set("");
-            }
-            return;
-        }
-        if (isFontWarning(viewModel.bannerMessageProperty().get())) {
-            viewModel.bannerMessageProperty().set("");
-        }
-    }
-
-    private boolean hasPreferredChineseFont() {
-        Set<String> installed = Set.copyOf(Font.getFamilies());
-        return installed.contains("Noto Sans SC")
-                || installed.contains("PingFang SC")
-                || installed.contains("Microsoft YaHei UI")
-                || installed.contains("HarmonyOS Sans SC")
-                || installed.contains("Microsoft YaHei")
-                || installed.contains("Noto Sans CJK SC")
-                || installed.contains("Source Han Sans SC");
-    }
-
-    private boolean isFontWarning(String text) {
-        return text != null && text.startsWith(FONT_WARNING_PREFIX);
     }
 
     private void commitTitle() {
@@ -1115,48 +1102,57 @@ public class MainView extends BorderPane {
             debugNewTaskDialog("ignored re-entrant drag-create request");
             return;
         }
-        timelineCreateDialogOpen = true;
 
         Task createdTask;
         try {
             createdTask = viewModel.createTask(i18n.t("new_task_default_title"), startDate, dueDate);
             setTaskInspectorVisible(true);
         } catch (ValidationException ex) {
-            timelineCreateDialogOpen = false;
             showValidationError(ex.getMessage());
             return;
         }
 
+        String createdTaskId = createdTask.id();
+        timelineCreateDialogOpen = true;
+        // Defer dialog launch until after drag-release event unwinds; avoid nested event loops in drag handlers.
+        Platform.runLater(() -> {
+            try {
+                showNewTaskTitleDialogAsync(createdTask.title(), titleResult ->
+                        finalizeTimelineCreatedTask(createdTaskId, titleResult));
+            } catch (Exception ex) {
+                timelineCreateDialogOpen = false;
+                viewModel.deleteTaskById(createdTaskId);
+                showValidationError(ex.getMessage());
+            }
+        });
+    }
+
+    private void finalizeTimelineCreatedTask(String taskId, Optional<String> titleResult) {
         try {
-            Optional<String> titleResult = showNewTaskTitleDialog(createdTask.title());
             if (titleResult.isEmpty()) {
-                // Cancelled creation should not leave a placeholder task behind.
-                Platform.runLater(() -> viewModel.deleteTaskById(createdTask.id()));
+                viewModel.deleteTaskById(taskId);
                 return;
             }
 
             String title = titleResult.get().trim();
             if (title.isBlank()) {
-                Platform.runLater(() -> viewModel.deleteTaskById(createdTask.id()));
+                viewModel.deleteTaskById(taskId);
                 return;
             }
 
-            // Keep submit handler quick and apply title updates after modal close.
-            Platform.runLater(() -> viewModel.findTask(createdTask.id()).ifPresent(task -> {
+            viewModel.findTask(taskId).ifPresent(task -> {
                 viewModel.selectTask(task);
                 if (!title.equals(task.title())) {
                     viewModel.updateSelectedTaskTitle(title);
                 }
-                viewModel.findTask(task.id()).ifPresent(updatedTask -> {
-                    navigateToTask(updatedTask);
-                });
-            }));
+                viewModel.findTask(task.id()).ifPresent(this::navigateToTask);
+            });
         } finally {
             timelineCreateDialogOpen = false;
         }
     }
 
-    private Optional<String> showNewTaskTitleDialog(String initialTitle) {
+    private void showNewTaskTitleDialogAsync(String initialTitle, Consumer<Optional<String>> completion) {
         Dialog<String> dialog = new Dialog<>();
         dialog.initOwner(getWindow());
         dialog.setTitle(i18n.t("new_task_dialog_title"));
@@ -1173,6 +1169,7 @@ public class MainView extends BorderPane {
         Button okButton = (Button) dialog.getDialogPane().lookupButton(okType);
         okButton.setDefaultButton(false);
         AtomicBoolean submitHandled = new AtomicBoolean(false);
+        AtomicBoolean completionHandled = new AtomicBoolean(false);
 
         okButton.disableProperty().bind(Bindings.createBooleanBinding(
                 () -> dialogTitleField.getText() == null || dialogTitleField.getText().isBlank(),
@@ -1198,20 +1195,30 @@ public class MainView extends BorderPane {
 
         dialog.setOnShown(event -> debugNewTaskDialog("dialog shown"));
         dialog.setOnCloseRequest(event -> debugNewTaskDialog("dialog close request"));
-        dialog.setOnHidden(event -> debugNewTaskDialog("dialog hidden"));
+        dialog.setOnHidden(event -> {
+            debugNewTaskDialog("dialog hidden");
+            if (!completionHandled.compareAndSet(false, true)) {
+                return;
+            }
+            if (completion != null) {
+                completion.accept(Optional.ofNullable(dialog.getResult()));
+            }
+        });
         dialog.setResultConverter(buttonType -> {
             debugNewTaskDialog("result converter: " + buttonType);
             return buttonType == okType ? dialogTitleField.getText() : null;
         });
-
-        return dialog.showAndWait();
+        dialog.show();
+        Platform.runLater(() -> {
+            if (dialogTitleField.getScene() != null) {
+                dialogTitleField.requestFocus();
+                dialogTitleField.selectAll();
+            }
+        });
     }
 
     private String formatDateForLanguage(LocalDate date) {
-        DateTimeFormatter formatter = i18n.language() == LanguageManager.Language.CHINESE
-                ? DateTimeFormatter.ofPattern("yyyy年M月d日")
-                : DateTimeFormatter.ofPattern("MMM d, yyyy");
-        return formatter.format(date);
+        return UI_DATE_FORMATTER.format(date);
     }
 
     private String formatZoomFieldValue(double zoom) {

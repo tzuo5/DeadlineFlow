@@ -1,8 +1,10 @@
 package com.deadlineflow.presentation.components;
 
+import com.sun.management.OperatingSystemMXBean;
 import com.deadlineflow.domain.model.RiskLevel;
 import com.deadlineflow.domain.model.Task;
 import com.deadlineflow.domain.model.TimeScale;
+import javafx.animation.AnimationTimer;
 import javafx.animation.FadeTransition;
 import javafx.animation.Interpolator;
 import javafx.animation.KeyFrame;
@@ -25,6 +27,7 @@ import javafx.geometry.Point2D;
 import javafx.geometry.Pos;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
+import javafx.scene.Parent;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Label;
@@ -51,21 +54,25 @@ import javafx.scene.text.Text;
 import javafx.scene.Scene;
 import javafx.util.Duration;
 
+import java.lang.management.ManagementFactory;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -104,7 +111,16 @@ public class GanttChartView extends Region {
     private static final int TEXT_WIDTH_CACHE_LIMIT = 1024;
     private static final int COLOR_CACHE_LIMIT = 512;
     private static final int GRADIENT_CACHE_LIMIT = 256;
+    private static final int MAX_REUSABLE_TASK_BARS = 160;
     private static final boolean DRAG_DEBUG = Boolean.getBoolean("deadlineflow.debug.drag");
+    // Dev-only telemetry is explicitly opt-in: -Ddeadlineflow.perf.telemetry=true
+    private static final boolean PERF_TELEMETRY_ENABLED = Boolean.getBoolean("deadlineflow.perf.telemetry");
+    private static final Duration PERF_TELEMETRY_INTERVAL = Duration.seconds(10);
+    private static final int PERF_MEMORY_WINDOW_SAMPLES = 6;
+    private static final double PERF_MEMORY_GROWTH_WARN_MB = 64;
+    private static final double PERF_IDLE_CPU_WARN_PERCENT = 15;
+    private static final int PERF_IDLE_CPU_WARN_STREAK = 3;
+    private static final List<String> INSTALLED_FONT_FAMILIES = List.copyOf(Font.getFamilies());
 
     private final Canvas headerCanvas = new Canvas();
     private final Canvas gridCanvas = new Canvas();
@@ -133,7 +149,7 @@ public class GanttChartView extends Region {
     private final ObjectProperty<Function<Task, String>> taskColorProvider = new SimpleObjectProperty<>(task -> "#3A7AFE");
 
     private ObservableList<Task> sourceTasks = FXCollections.observableArrayList();
-    private final ListChangeListener<Task> sourceTaskListener = change -> refreshAll();
+    private final ListChangeListener<Task> sourceTaskListener = change -> onSourceTasksChanged();
 
     private List<Task> orderedTasks = new ArrayList<>();
     private final Map<String, Integer> taskIndexById = new HashMap<>();
@@ -144,9 +160,13 @@ public class GanttChartView extends Region {
     private final Map<String, Integer> slackByTaskId = new HashMap<>();
     private final Set<String> knownTaskIds = new HashSet<>();
     private final Set<String> pendingEntryAnimationTaskIds = new HashSet<>();
-    private final Map<String, TaskBar> taskBarPool = new HashMap<>();
+    private final Map<String, TaskBar> activeTaskBarsByTaskId = new HashMap<>();
+    private final Deque<TaskBar> reusableTaskBars = new ArrayDeque<>();
     private final List<Node> visibleBarsScratch = new ArrayList<>();
+    private final Set<String> visibleTaskIdsScratch = new HashSet<>();
     private boolean taskTrackingInitialized;
+    private boolean taskOrderDirty = true;
+    private boolean timelineBoundsDirty = true;
 
     private LocalDate timelineStart = LocalDate.now().minusDays(7);
     private LocalDate timelineEnd = LocalDate.now().plusDays(30);
@@ -159,17 +179,33 @@ public class GanttChartView extends Region {
     private boolean dragOverlayUpdateQueued;
     private EventHandler<MouseEvent> sceneDragCaptureHandler;
     private EventHandler<MouseEvent> sceneReleaseCaptureHandler;
+    private boolean headerDrawQueued;
+    private boolean barsDrawQueued;
     private boolean barsDirty = true;
     private int lastRenderedFirstIndex = -1;
     private int lastRenderedLastIndex = -1;
+    private double lastLayoutWidth = -1;
+    private double lastLayoutHeight = -1;
     private boolean editingEnabled = true;
     private boolean darkTheme;
     private ScrollBar horizontalScrollBar;
     private FadeTransition horizontalScrollbarFade;
     private boolean timelineHovered;
     private Timeline currentTimeIndicatorRefreshTimeline;
+    private Timeline performanceTelemetryTimeline;
+    private AnimationTimer pulseTelemetryTimer;
+    private boolean refreshQueued;
+    private boolean disposed;
+    private long layoutPassCounter;
+    private long refreshPassCounter;
+    private double refreshDurationTotalMillis;
+    private long pulseLastNanos = -1;
+    private long pulseSampleCount;
+    private double pulseSampleTotalMillis;
+    private final Deque<Double> processMemorySamplesMb = new ArrayDeque<>();
+    private int idleHighCpuSampleStreak;
+    private final OperatingSystemMXBean osBean = ManagementFactory.getPlatformMXBean(OperatingSystemMXBean.class);
     private Locale uiLocale = Locale.ENGLISH;
-    private boolean chineseTypography;
     private String headerFontFamily = "Inter";
     private Font cachedHeaderPrimaryFont;
     private Font cachedHeaderSecondaryFont;
@@ -253,25 +289,42 @@ public class GanttChartView extends Region {
 
         getChildren().addAll(headerCanvas, scrollPane, emptyState);
 
-        widthProperty().addListener((obs, oldValue, newValue) -> refreshAll());
-        heightProperty().addListener((obs, oldValue, newValue) -> refreshAll());
-        scale.addListener((obs, oldValue, newValue) -> refreshAll());
-        zoom.addListener((obs, oldValue, newValue) -> refreshAll());
-        rowZoom.addListener((obs, oldValue, newValue) -> refreshAll());
+        widthProperty().addListener((obs, oldValue, newValue) -> requestRefreshAll());
+        heightProperty().addListener((obs, oldValue, newValue) -> requestRefreshAll());
+        scale.addListener((obs, oldValue, newValue) -> requestRefreshAll());
+        zoom.addListener((obs, oldValue, newValue) -> requestRefreshAll());
+        rowZoom.addListener((obs, oldValue, newValue) -> requestRefreshAll());
 
-        scrollPane.hvalueProperty().addListener((obs, oldValue, newValue) -> drawHeader());
-        scrollPane.vvalueProperty().addListener((obs, oldValue, newValue) -> drawVisibleBars());
+        scrollPane.hvalueProperty().addListener((obs, oldValue, newValue) -> requestDrawHeader());
+        scrollPane.vvalueProperty().addListener((obs, oldValue, newValue) -> requestDrawVisibleBars());
         scrollPane.viewportBoundsProperty().addListener((obs, oldValue, newValue) -> {
             resolveHorizontalScrollbar();
-            refreshAll();
+            requestRefreshAll();
         });
 
         setFocusTraversable(true);
         addEventFilter(KeyEvent.KEY_PRESSED, this::onKeyPressed);
 
-        setTasks(sourceTasks);
-        Platform.runLater(this::resolveHorizontalScrollbar);
-        startCurrentTimeIndicatorUpdater();
+        sourceTasks.addListener(sourceTaskListener);
+        sceneProperty().addListener((obs, oldScene, newScene) -> {
+            if (newScene == null) {
+                stopCurrentTimeIndicatorUpdater();
+                stopPerformanceTelemetry();
+                hideDragSelectionTooltip();
+                removeSceneDragCapture();
+                horizontalScrollBar = null;
+                return;
+            }
+            startCurrentTimeIndicatorUpdater();
+            startPerformanceTelemetry();
+            requestRefreshAll();
+            Platform.runLater(() -> {
+                if (getScene() != null) {
+                    resolveHorizontalScrollbar();
+                }
+            });
+        });
+        requestRefreshAll();
     }
 
     public void setTasks(ObservableList<Task> tasks) {
@@ -281,15 +334,27 @@ public class GanttChartView extends Region {
         sourceTasks = tasks == null ? FXCollections.observableArrayList() : tasks;
         sourceTasks.addListener(sourceTaskListener);
         taskTrackingInitialized = false;
+        taskOrderDirty = true;
+        timelineBoundsDirty = true;
         knownTaskIds.clear();
         pendingEntryAnimationTaskIds.clear();
-        if (!taskBarPool.isEmpty()) {
-            for (TaskBar taskBar : taskBarPool.values()) {
-                taskBar.dispose();
-            }
-            taskBarPool.clear();
-        }
-        refreshAll();
+        selectedTaskId = null;
+        riskByTaskId.clear();
+        conflictMessageByTaskId.clear();
+        criticalTaskIds.clear();
+        slackByTaskId.clear();
+        barsDirty = true;
+        lastRenderedFirstIndex = -1;
+        lastRenderedLastIndex = -1;
+        disposeTaskBars();
+        requestRefreshAll();
+    }
+
+    private void onSourceTasksChanged() {
+        taskOrderDirty = true;
+        timelineBoundsDirty = true;
+        barsDirty = true;
+        requestRefreshAll();
     }
 
     public void setScale(TimeScale scale) {
@@ -336,17 +401,7 @@ public class GanttChartView extends Region {
         uiLocale = normalized;
         refreshHeaderRenderingCache();
         barsDirty = true;
-        refreshAll();
-    }
-
-    public void setChineseTypography(boolean enabled) {
-        if (chineseTypography == enabled) {
-            return;
-        }
-        chineseTypography = enabled;
-        refreshHeaderFontFamily();
-        barsDirty = true;
-        refreshAll();
+        requestRefreshAll();
     }
 
     public void setDarkTheme(boolean enabled) {
@@ -357,7 +412,7 @@ public class GanttChartView extends Region {
         gradientCache.clear();
         updateSelectionOverlayPaint();
         barsDirty = true;
-        refreshAll();
+        requestRefreshAll();
     }
 
     public void setOnTaskSelected(Consumer<Task> callback) {
@@ -402,7 +457,7 @@ public class GanttChartView extends Region {
         taskColorProvider.set(provider == null ? task -> "#3A7AFE" : provider);
         gradientCache.clear();
         barsDirty = true;
-        drawVisibleBars();
+        requestDrawVisibleBars();
     }
 
     public void setRiskByTaskId(Map<String, RiskLevel> riskMap) {
@@ -411,7 +466,7 @@ public class GanttChartView extends Region {
             riskByTaskId.putAll(riskMap);
         }
         barsDirty = true;
-        drawVisibleBars();
+        requestDrawVisibleBars();
     }
 
     public void setConflictMessageByTaskId(Map<String, String> conflictMap) {
@@ -420,7 +475,7 @@ public class GanttChartView extends Region {
             conflictMessageByTaskId.putAll(conflictMap);
         }
         barsDirty = true;
-        drawVisibleBars();
+        requestDrawVisibleBars();
     }
 
     public void setCriticalTaskIds(Set<String> criticalTasks) {
@@ -429,7 +484,7 @@ public class GanttChartView extends Region {
             criticalTaskIds.addAll(criticalTasks);
         }
         barsDirty = true;
-        drawVisibleBars();
+        requestDrawVisibleBars();
     }
 
     public void setSlackByTaskId(Map<String, Integer> slackMap) {
@@ -438,7 +493,7 @@ public class GanttChartView extends Region {
             slackByTaskId.putAll(slackMap);
         }
         barsDirty = true;
-        drawVisibleBars();
+        requestDrawVisibleBars();
     }
 
     public void setDerivedMetadata(
@@ -469,7 +524,7 @@ public class GanttChartView extends Region {
         }
 
         barsDirty = true;
-        drawVisibleBars();
+        requestDrawVisibleBars();
     }
 
     public void setSelectedTaskId(String taskId) {
@@ -478,11 +533,11 @@ public class GanttChartView extends Region {
         }
         selectedTaskId = taskId;
         barsDirty = true;
-        drawVisibleBars();
+        requestDrawVisibleBars();
     }
 
     public void refresh() {
-        refreshAll();
+        requestRefreshAll();
     }
 
     public void focusTask(String taskId) {
@@ -521,9 +576,153 @@ public class GanttChartView extends Region {
         }
     }
 
+    public void dispose() {
+        if (disposed) {
+            return;
+        }
+        disposed = true;
+        if (sourceTasks != null) {
+            sourceTasks.removeListener(sourceTaskListener);
+        }
+        stopCurrentTimeIndicatorUpdater();
+        stopPerformanceTelemetry();
+        if (horizontalScrollbarFade != null) {
+            horizontalScrollbarFade.stop();
+            horizontalScrollbarFade = null;
+        }
+        hideDragSelectionTooltip();
+        clearSelectionState();
+        disposeTaskBars();
+        orderedTasks = List.of();
+        taskIndexById.clear();
+        knownTaskIds.clear();
+        pendingEntryAnimationTaskIds.clear();
+        riskByTaskId.clear();
+        conflictMessageByTaskId.clear();
+        criticalTaskIds.clear();
+        slackByTaskId.clear();
+        textWidthCache.clear();
+        colorCache.clear();
+        gradientCache.clear();
+        processMemorySamplesMb.clear();
+        visibleBarsScratch.clear();
+        visibleTaskIdsScratch.clear();
+    }
+
+    private void requestRefreshAll() {
+        if (disposed || refreshQueued) {
+            return;
+        }
+        refreshQueued = true;
+        Platform.runLater(() -> {
+            refreshQueued = false;
+            if (!disposed) {
+                refreshAll();
+            }
+        });
+    }
+
+    private void requestDrawHeader() {
+        if (disposed || headerDrawQueued) {
+            return;
+        }
+        headerDrawQueued = true;
+        Platform.runLater(() -> {
+            headerDrawQueued = false;
+            if (!disposed) {
+                drawHeader();
+            }
+        });
+    }
+
+    private void requestDrawVisibleBars() {
+        if (disposed || barsDrawQueued) {
+            return;
+        }
+        barsDrawQueued = true;
+        Platform.runLater(() -> {
+            barsDrawQueued = false;
+            if (!disposed) {
+                drawVisibleBars();
+            }
+        });
+    }
+
+    private TaskBar borrowTaskBar() {
+        TaskBar bar = reusableTaskBars.pollFirst();
+        if (bar != null) {
+            return bar;
+        }
+        return new TaskBar();
+    }
+
+    private void releaseTaskBar(TaskBar bar) {
+        if (bar == null) {
+            return;
+        }
+        bar.prepareForReuse();
+        if (reusableTaskBars.size() >= MAX_REUSABLE_TASK_BARS) {
+            TaskBar evicted = reusableTaskBars.pollLast();
+            if (evicted != null) {
+                evicted.dispose();
+            }
+        }
+        reusableTaskBars.offerFirst(bar);
+    }
+
+    private void releaseActiveTaskBars() {
+        if (activeTaskBarsByTaskId.isEmpty()) {
+            return;
+        }
+        for (TaskBar bar : activeTaskBarsByTaskId.values()) {
+            releaseTaskBar(bar);
+        }
+        activeTaskBarsByTaskId.clear();
+        taskBarsLayer.getChildren().clear();
+    }
+
+    private void disposeTaskBars() {
+        if (!taskBarsLayer.getChildren().isEmpty()) {
+            taskBarsLayer.getChildren().clear();
+        }
+        if (!activeTaskBarsByTaskId.isEmpty()) {
+            for (TaskBar bar : activeTaskBarsByTaskId.values()) {
+                bar.dispose();
+            }
+            activeTaskBarsByTaskId.clear();
+        }
+        while (!reusableTaskBars.isEmpty()) {
+            TaskBar bar = reusableTaskBars.pollFirst();
+            if (bar != null) {
+                bar.dispose();
+            }
+        }
+    }
+
+    private void trimReusableTaskBarPool() {
+        int targetSize = Math.min(MAX_REUSABLE_TASK_BARS, Math.max(24, orderedTasks.size()));
+        while (reusableTaskBars.size() > targetSize) {
+            TaskBar evicted = reusableTaskBars.pollLast();
+            if (evicted != null) {
+                evicted.dispose();
+            }
+        }
+    }
+
     private void refreshAll() {
-        rebuildTaskOrder();
-        rebuildTimelineBounds();
+        if (disposed) {
+            return;
+        }
+        long refreshStartedAt = PERF_TELEMETRY_ENABLED ? System.nanoTime() : 0;
+        if (taskOrderDirty) {
+            rebuildTaskOrder();
+            taskOrderDirty = false;
+            timelineBoundsDirty = true;
+        }
+        if (timelineBoundsDirty) {
+            rebuildTimelineBounds();
+            timelineBoundsDirty = false;
+        }
         relayoutContent();
         drawGrid();
         updateTodayIndicator();
@@ -534,6 +733,10 @@ public class GanttChartView extends Region {
         drawVisibleBars();
         drawHeader();
         resolveHorizontalScrollbar();
+        if (PERF_TELEMETRY_ENABLED) {
+            refreshPassCounter++;
+            refreshDurationTotalMillis += (System.nanoTime() - refreshStartedAt) / 1_000_000.0;
+        }
     }
 
     private void rebuildTaskOrder() {
@@ -566,18 +769,15 @@ public class GanttChartView extends Region {
             knownTaskIds.addAll(currentTaskIds);
         }
         pendingEntryAnimationTaskIds.retainAll(currentTaskIds);
+        trimReusableTaskBarPool();
 
-        if (!taskBarPool.isEmpty()) {
-            List<String> removedTaskIds = new ArrayList<>();
-            for (String taskId : taskBarPool.keySet()) {
-                if (!currentTaskIds.contains(taskId)) {
-                    removedTaskIds.add(taskId);
-                }
-            }
-            for (String taskId : removedTaskIds) {
-                TaskBar staleBar = taskBarPool.remove(taskId);
-                if (staleBar != null) {
-                    staleBar.dispose();
+        if (!activeTaskBarsByTaskId.isEmpty()) {
+            Iterator<Map.Entry<String, TaskBar>> iterator = activeTaskBarsByTaskId.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, TaskBar> entry = iterator.next();
+                if (!currentTaskIds.contains(entry.getKey())) {
+                    releaseTaskBar(entry.getValue());
+                    iterator.remove();
                 }
             }
         }
@@ -915,14 +1115,9 @@ public class GanttChartView extends Region {
         debugDrag("drawVisibleBars");
         updateEmptyStateVisibility();
         if (orderedTasks.isEmpty()) {
+            releaseActiveTaskBars();
             if (!taskBarsLayer.getChildren().isEmpty()) {
                 taskBarsLayer.getChildren().clear();
-            }
-            if (!taskBarPool.isEmpty()) {
-                for (TaskBar taskBar : taskBarPool.values()) {
-                    taskBar.dispose();
-                }
-                taskBarPool.clear();
             }
             barsDirty = false;
             lastRenderedFirstIndex = -1;
@@ -949,14 +1144,45 @@ public class GanttChartView extends Region {
             return;
         }
 
+        visibleTaskIdsScratch.clear();
+        for (int index = firstIndex; index <= lastIndex; index++) {
+            visibleTaskIdsScratch.add(orderedTasks.get(index).id());
+        }
+        if (!activeTaskBarsByTaskId.isEmpty()) {
+            Iterator<Map.Entry<String, TaskBar>> iterator = activeTaskBarsByTaskId.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, TaskBar> entry = iterator.next();
+                if (!visibleTaskIdsScratch.contains(entry.getKey())) {
+                    releaseTaskBar(entry.getValue());
+                    iterator.remove();
+                }
+            }
+        }
+
         visibleBarsScratch.clear();
         for (int index = firstIndex; index <= lastIndex; index++) {
             Task task = orderedTasks.get(index);
-            TaskBar bar = taskBarPool.computeIfAbsent(task.id(), id -> new TaskBar());
+            TaskBar bar = activeTaskBarsByTaskId.get(task.id());
+            if (bar == null) {
+                bar = borrowTaskBar();
+                activeTaskBarsByTaskId.put(task.id(), bar);
+            }
             bar.bind(task, index);
             visibleBarsScratch.add(bar);
         }
-        taskBarsLayer.getChildren().setAll(visibleBarsScratch);
+        boolean compositionChanged = visibleRangeChanged
+                || taskBarsLayer.getChildren().size() != visibleBarsScratch.size();
+        if (!compositionChanged) {
+            for (int i = 0; i < visibleBarsScratch.size(); i++) {
+                if (taskBarsLayer.getChildren().get(i) != visibleBarsScratch.get(i)) {
+                    compositionChanged = true;
+                    break;
+                }
+            }
+        }
+        if (compositionChanged) {
+            taskBarsLayer.getChildren().setAll(visibleBarsScratch);
+        }
         barsDirty = false;
         lastRenderedFirstIndex = firstIndex;
         lastRenderedLastIndex = lastIndex;
@@ -1081,6 +1307,9 @@ public class GanttChartView extends Region {
     }
 
     private void startCurrentTimeIndicatorUpdater() {
+        if (disposed || getScene() == null) {
+            return;
+        }
         if (currentTimeIndicatorRefreshTimeline != null) {
             currentTimeIndicatorRefreshTimeline.stop();
         }
@@ -1092,36 +1321,202 @@ public class GanttChartView extends Region {
         currentTimeIndicatorRefreshTimeline.play();
     }
 
-    private void refreshHeaderFontFamily() {
-        if (chineseTypography) {
-            headerFontFamily = pickAvailableFontFamily(
-                    "PingFang SC",
-                    "HarmonyOS Sans SC",
-                    "Noto Sans SC",
-                    "Microsoft YaHei UI",
-                    "Microsoft YaHei",
-                    "Segoe UI"
-            );
-        } else {
-            headerFontFamily = pickAvailableFontFamily(
-                    "Inter",
-                    "SF Pro Text",
-                    "Segoe UI",
-                    "Helvetica Neue",
-                    "Arial"
-            );
+    private void stopCurrentTimeIndicatorUpdater() {
+        if (currentTimeIndicatorRefreshTimeline != null) {
+            currentTimeIndicatorRefreshTimeline.stop();
+            currentTimeIndicatorRefreshTimeline = null;
         }
+    }
+
+    private void startPerformanceTelemetry() {
+        if (!PERF_TELEMETRY_ENABLED || disposed || getScene() == null) {
+            return;
+        }
+        if (pulseTelemetryTimer == null) {
+            pulseTelemetryTimer = new AnimationTimer() {
+                @Override
+                public void handle(long now) {
+                    if (pulseLastNanos > 0 && now > pulseLastNanos) {
+                        pulseSampleTotalMillis += (now - pulseLastNanos) / 1_000_000.0;
+                        pulseSampleCount++;
+                    }
+                    pulseLastNanos = now;
+                }
+            };
+        }
+        pulseLastNanos = -1;
+        pulseTelemetryTimer.start();
+
+        if (performanceTelemetryTimeline == null) {
+            performanceTelemetryTimeline = new Timeline(
+                    new KeyFrame(PERF_TELEMETRY_INTERVAL, event -> logPerformanceSnapshot())
+            );
+            performanceTelemetryTimeline.setCycleCount(Timeline.INDEFINITE);
+        }
+        performanceTelemetryTimeline.playFromStart();
+    }
+
+    private void stopPerformanceTelemetry() {
+        if (performanceTelemetryTimeline != null) {
+            performanceTelemetryTimeline.stop();
+            performanceTelemetryTimeline = null;
+        }
+        if (pulseTelemetryTimer != null) {
+            pulseTelemetryTimer.stop();
+        }
+        pulseLastNanos = -1;
+        pulseSampleCount = 0;
+        pulseSampleTotalMillis = 0;
+        layoutPassCounter = 0;
+        refreshPassCounter = 0;
+        refreshDurationTotalMillis = 0;
+        processMemorySamplesMb.clear();
+        idleHighCpuSampleStreak = 0;
+    }
+
+    private void logPerformanceSnapshot() {
+        if (!PERF_TELEMETRY_ENABLED || disposed) {
+            return;
+        }
+
+        double averagePulseMillis = pulseSampleCount == 0 ? 0 : pulseSampleTotalMillis / pulseSampleCount;
+        pulseSampleCount = 0;
+        pulseSampleTotalMillis = 0;
+
+        long layoutPasses = layoutPassCounter;
+        layoutPassCounter = 0;
+        long refreshPasses = refreshPassCounter;
+        double averageRefreshMillis = refreshPasses == 0 ? 0 : refreshDurationTotalMillis / refreshPasses;
+        refreshPassCounter = 0;
+        refreshDurationTotalMillis = 0;
+
+        MemorySnapshot memory = captureMemorySnapshot();
+        double processCpuPercent = readProcessCpuPercent();
+        boolean idle = !dragSelection.active
+                && !dragOverlayUpdateQueued
+                && !refreshQueued
+                && !barsDirty
+                && !headerDrawQueued
+                && !barsDrawQueued;
+        trackTelemetryWarnings(memory.processMemoryMb(), processCpuPercent, idle);
+
+        System.out.printf(Locale.ROOT,
+                "[Perf][Gantt] pulseAvgMs=%.2f layoutPasses=%d refreshPasses=%d refreshAvgMs=%.2f activeTaskNodes=%d timelineNodeCount=%d heapUsedMb=%.1f heapCommittedMb=%.1f processMemMb=%.1f cpu=%.1f%%%n",
+                averagePulseMillis,
+                layoutPasses,
+                refreshPasses,
+                averageRefreshMillis,
+                activeTaskBarsByTaskId.size(),
+                countNodes(this),
+                memory.heapUsedMb(),
+                memory.heapCommittedMb(),
+                memory.processMemoryMb(),
+                processCpuPercent
+        );
+    }
+
+    private MemorySnapshot captureMemorySnapshot() {
+        Runtime runtime = Runtime.getRuntime();
+        double totalMb = runtime.totalMemory() / (1024.0 * 1024.0);
+        double usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024.0 * 1024.0);
+        double maxMb = runtime.maxMemory() / (1024.0 * 1024.0);
+        return new MemorySnapshot(usedMb, totalMb, maxMb, readProcessMemoryMb());
+    }
+
+    private double readProcessMemoryMb() {
+        if (osBean == null) {
+            return Double.NaN;
+        }
+        long bytes = osBean.getCommittedVirtualMemorySize();
+        if (bytes <= 0) {
+            return Double.NaN;
+        }
+        // Best-effort RSS proxy from JMX without adding native dependencies.
+        return bytes / (1024.0 * 1024.0);
+    }
+
+    private double readProcessCpuPercent() {
+        if (osBean == null) {
+            return Double.NaN;
+        }
+        double load = osBean.getProcessCpuLoad();
+        if (load < 0) {
+            return Double.NaN;
+        }
+        return load * 100.0;
+    }
+
+    private void trackTelemetryWarnings(double processMemoryMb, double processCpuPercent, boolean idle) {
+        if (!Double.isNaN(processMemoryMb)) {
+            processMemorySamplesMb.addLast(processMemoryMb);
+            while (processMemorySamplesMb.size() > PERF_MEMORY_WINDOW_SAMPLES) {
+                processMemorySamplesMb.removeFirst();
+            }
+            if (processMemorySamplesMb.size() == PERF_MEMORY_WINDOW_SAMPLES) {
+                double memoryGrowth = processMemorySamplesMb.getLast() - processMemorySamplesMb.getFirst();
+                if (memoryGrowth >= PERF_MEMORY_GROWTH_WARN_MB) {
+                    System.out.printf(Locale.ROOT,
+                            "[Perf][Gantt][WARN] sustained process-memory growth detected: +%.1fMB over %d samples%n",
+                            memoryGrowth,
+                            PERF_MEMORY_WINDOW_SAMPLES
+                    );
+                    processMemorySamplesMb.clear();
+                }
+            }
+        }
+
+        if (idle && !Double.isNaN(processCpuPercent) && processCpuPercent >= PERF_IDLE_CPU_WARN_PERCENT) {
+            idleHighCpuSampleStreak++;
+            if (idleHighCpuSampleStreak >= PERF_IDLE_CPU_WARN_STREAK) {
+                System.out.printf(Locale.ROOT,
+                        "[Perf][Gantt][WARN] idle CPU floor high: %.1f%% for %d consecutive samples%n",
+                        processCpuPercent,
+                        idleHighCpuSampleStreak
+                );
+                idleHighCpuSampleStreak = 0;
+            }
+        } else {
+            idleHighCpuSampleStreak = 0;
+        }
+    }
+
+    private int countNodes(Node node) {
+        if (!(node instanceof Parent parent)) {
+            return 1;
+        }
+        int count = 1;
+        for (Node child : parent.getChildrenUnmodifiable()) {
+            count += countNodes(child);
+        }
+        return count;
+    }
+
+    private void refreshHeaderFontFamily() {
+        headerFontFamily = pickAvailableFontFamily(
+                "Inter",
+                "SF Pro Text",
+                "Segoe UI",
+                "Helvetica Neue",
+                "Arial"
+        );
         refreshHeaderRenderingCache();
     }
 
     private String pickAvailableFontFamily(String... candidates) {
-        List<String> installedFonts = Font.getFamilies();
         for (String candidate : candidates) {
-            if (installedFonts.contains(candidate)) {
+            if (INSTALLED_FONT_FAMILIES.contains(candidate)) {
                 return candidate;
             }
         }
         return Font.getDefault().getFamily();
+    }
+
+    private record MemorySnapshot(
+            double heapUsedMb,
+            double heapCommittedMb,
+            double heapMaxMb,
+            double processMemoryMb
+    ) {
     }
 
     private void refreshHeaderRenderingCache() {
@@ -1129,11 +1524,7 @@ public class GanttChartView extends Region {
         cachedHeaderSecondaryFont = Font.font(headerFontFamily, FontWeight.MEDIUM, 10);
         cachedHeaderYearFont = Font.font(headerFontFamily, FontWeight.BOLD, 12);
 
-        if (Locale.SIMPLIFIED_CHINESE.getLanguage().equals(uiLocale.getLanguage())) {
-            cachedHeaderDateFormatter = DateTimeFormatter.ofPattern("M月d日", uiLocale);
-        } else {
-            cachedHeaderDateFormatter = DateTimeFormatter.ofPattern("MMM d", uiLocale);
-        }
+        cachedHeaderDateFormatter = DateTimeFormatter.ofPattern("MMM d", uiLocale);
         cachedHeaderWeekdayFormatter = DateTimeFormatter.ofPattern("EEE", uiLocale);
         cachedHeaderMonthFormatter = DateTimeFormatter.ofPattern("MMM yyyy", uiLocale);
         cachedHeaderYearFormatter = DateTimeFormatter.ofPattern("yyyy", uiLocale);
@@ -1146,16 +1537,19 @@ public class GanttChartView extends Region {
 
     @Override
     protected void layoutChildren() {
+        layoutPassCounter++;
         double width = getWidth();
         double height = getHeight();
 
         headerCanvas.resizeRelocate(0, 0, width, HEADER_HEIGHT);
         scrollPane.resizeRelocate(0, HEADER_HEIGHT, width, Math.max(0, height - HEADER_HEIGHT));
-        relayoutContent();
-        drawGrid();
-        updateTodayIndicator();
-        drawVisibleBars();
-        drawHeader();
+        if (Double.compare(lastLayoutWidth, width) != 0 || Double.compare(lastLayoutHeight, height) != 0) {
+            lastLayoutWidth = width;
+            lastLayoutHeight = height;
+            requestRefreshAll();
+        } else if (dragSelection.active) {
+            updateSelectionOverlayBounds();
+        }
         layoutEmptyState(width, height);
     }
 
@@ -1271,6 +1665,24 @@ public class GanttChartView extends Region {
                 setScaleY(1.0);
             }
             updateVisual(previewStart, previewDue);
+        }
+
+        private void prepareForReuse() {
+            hovered = false;
+            selectionAnimationPlayed = false;
+            dragMode = DragMode.NONE;
+            task = null;
+            setCursor(Cursor.DEFAULT);
+            setEffect(null);
+            setOpacity(1.0);
+            setTranslateY(0.0);
+            setScaleX(1.0);
+            setScaleY(1.0);
+            if (tooltip != null) {
+                tooltip.hide();
+                Tooltip.uninstall(this, tooltip);
+                tooltip = null;
+            }
         }
 
         private void dispose() {

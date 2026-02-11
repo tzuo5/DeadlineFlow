@@ -51,10 +51,17 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.prefs.Preferences;
 
 public class MainViewModel {
     public static final String DONE_STATUS = "DONE";
     private static final boolean MODEL_DEBUG = Boolean.getBoolean("deadlineflow.debug.model");
+    private static final String PREF_KEY_TIMELINE_ZOOM = "timeline_zoom";
+    private static final double DEFAULT_ZOOM = 1.0;
+    private static final double MIN_ZOOM = 0.25;
+    private static final double MAX_ZOOM = 4.0;
+
+    private final Preferences preferences = Preferences.userNodeForPackage(MainViewModel.class);
 
     private final ProjectRepository projectRepository;
     private final TaskRepository taskRepository;
@@ -71,7 +78,7 @@ public class MainViewModel {
     private final ObjectProperty<Project> selectedProject = new SimpleObjectProperty<>();
     private final ObjectProperty<Task> selectedTask = new SimpleObjectProperty<>();
     private final ObjectProperty<TimeScale> scale = new SimpleObjectProperty<>(TimeScale.WEEK);
-    private final DoubleProperty zoom = new SimpleDoubleProperty(1.0);
+    private final DoubleProperty zoom = new SimpleDoubleProperty(loadZoomPreference());
 
     private final StringProperty bannerMessage = new SimpleStringProperty("");
     private final StringProperty cpmMessage = new SimpleStringProperty("");
@@ -174,6 +181,15 @@ public class MainViewModel {
         allDependencies.addListener((javafx.collections.ListChangeListener<? super Dependency>) change -> {
             debugModel("listener: allDependencies changed");
             scheduleDerivedStateRecompute("dependencies-listener");
+        });
+
+        zoom.addListener((obs, oldValue, newValue) -> {
+            double normalizedZoom = clampZoom(newValue.doubleValue());
+            if (Double.compare(normalizedZoom, newValue.doubleValue()) != 0) {
+                zoom.set(normalizedZoom);
+                return;
+            }
+            preferences.putDouble(PREF_KEY_TIMELINE_ZOOM, normalizedZoom);
         });
 
         normalizeUnknownTaskStatuses();
@@ -870,12 +886,27 @@ public class MainViewModel {
         return "Project Finish Date: " + DateTimeFormatter.ISO_LOCAL_DATE.format(projectFinishDate.get());
     }
 
+    public void shutdown() {
+        derivedStateExecutor.shutdownNow();
+    }
+
     private ThreadFactory daemonThreadFactory(String threadName) {
         return runnable -> {
             Thread thread = new Thread(runnable, threadName);
             thread.setDaemon(true);
             return thread;
         };
+    }
+
+    private double loadZoomPreference() {
+        return clampZoom(preferences.getDouble(PREF_KEY_TIMELINE_ZOOM, DEFAULT_ZOOM));
+    }
+
+    private double clampZoom(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return DEFAULT_ZOOM;
+        }
+        return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
     }
 
     private record DerivedStateResult(

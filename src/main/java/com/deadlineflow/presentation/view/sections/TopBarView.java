@@ -1,7 +1,6 @@
 package com.deadlineflow.presentation.view.sections;
 
 import com.deadlineflow.presentation.theme.ThemeManager;
-import com.deadlineflow.presentation.viewmodel.LanguageManager;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
@@ -31,9 +30,6 @@ public class TopBarView extends VBox {
     private final Label themeLabel = new Label();
     private final ComboBox<ThemeManager.ThemeMode> themeComboBox = new ComboBox<>();
 
-    private final Label languageLabel = new Label();
-    private final ComboBox<LanguageManager.Language> languageComboBox = new ComboBox<>();
-
     private final Button addTaskButton = new Button();
     private final Label finishDateLabel = new Label();
 
@@ -49,7 +45,6 @@ public class TopBarView extends VBox {
         scaleLabel.getStyleClass().add("toolbar-group-label");
         zoomLabel.getStyleClass().add("toolbar-group-label");
         themeLabel.getStyleClass().add("toolbar-group-label");
-        languageLabel.getStyleClass().add("toolbar-group-label");
 
         HBox segmentedScale = new HBox(hourButton, dayButton, weekButton, yearButton);
         segmentedScale.getStyleClass().add("segmented-control");
@@ -75,9 +70,6 @@ public class TopBarView extends VBox {
         themeComboBox.setMinWidth(96);
         themeComboBox.setPrefWidth(128);
         themeComboBox.setMaxWidth(180);
-        languageComboBox.setMinWidth(96);
-        languageComboBox.setPrefWidth(128);
-        languageComboBox.setMaxWidth(180);
         addTaskButton.getStyleClass().addAll("pill-button", "primary-button");
         finishDateLabel.getStyleClass().add("finish-date-label");
         finishDateLabel.setMinWidth(Region.USE_PREF_SIZE);
@@ -88,10 +80,7 @@ public class TopBarView extends VBox {
         HBox themeGroup = new HBox(8, themeLabel, themeComboBox);
         themeGroup.setAlignment(Pos.CENTER_LEFT);
 
-        HBox languageGroup = new HBox(8, languageLabel, languageComboBox);
-        languageGroup.setAlignment(Pos.CENTER_LEFT);
-
-        HBox rightControls = new HBox(12, themeGroup, divider(), languageGroup, addTaskButton, divider(), finishDateLabel);
+        HBox rightControls = new HBox(12, themeGroup, divider(), addTaskButton, divider(), finishDateLabel);
         rightControls.setAlignment(Pos.CENTER_RIGHT);
 
         Region controlsSpacer = new Region();
@@ -174,14 +163,6 @@ public class TopBarView extends VBox {
 
     public ComboBox<ThemeManager.ThemeMode> themeComboBox() {
         return themeComboBox;
-    }
-
-    public Label languageLabel() {
-        return languageLabel;
-    }
-
-    public ComboBox<LanguageManager.Language> languageComboBox() {
-        return languageComboBox;
     }
 
     public Button addTaskButton() {

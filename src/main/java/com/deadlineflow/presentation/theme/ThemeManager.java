@@ -2,6 +2,7 @@ package com.deadlineflow.presentation.theme;
 
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
+import javafx.css.PseudoClass;
 import javafx.scene.Scene;
 
 import java.util.List;
@@ -18,6 +19,10 @@ public class ThemeManager {
     private static final String BASE_CSS = "/com/deadlineflow/presentation/styles/base.css";
     private static final String LIGHT_CSS = "/com/deadlineflow/presentation/styles/light.css";
     private static final String DARK_CSS = "/com/deadlineflow/presentation/styles/dark.css";
+    private static final String BASE_CSS_URL = requireStylesheet(BASE_CSS);
+    private static final String LIGHT_CSS_URL = requireStylesheet(LIGHT_CSS);
+    private static final String DARK_CSS_URL = requireStylesheet(DARK_CSS);
+    private static final PseudoClass DARK_PSEUDO_CLASS = PseudoClass.getPseudoClass("dark");
 
     private final Preferences preferences = Preferences.userNodeForPackage(ThemeManager.class);
     private final ObjectProperty<ThemeMode> themeMode = new SimpleObjectProperty<>(loadThemeMode());
@@ -67,16 +72,23 @@ public class ThemeManager {
     }
 
     private void applyToScene(Scene scene, ThemeMode effective) {
-        String base = getClass().getResource(BASE_CSS).toExternalForm();
-        String light = getClass().getResource(LIGHT_CSS).toExternalForm();
-        String dark = getClass().getResource(DARK_CSS).toExternalForm();
-
         List<String> stylesheets = scene.getStylesheets();
-        stylesheets.removeIf(sheet -> sheet.equals(base) || sheet.equals(light) || sheet.equals(dark));
-        stylesheets.add(base);
-        stylesheets.add(effective == ThemeMode.DARK ? dark : light);
+        if (!stylesheets.contains(BASE_CSS_URL)) {
+            stylesheets.add(BASE_CSS_URL);
+        }
+        if (effective == ThemeMode.DARK) {
+            stylesheets.remove(LIGHT_CSS_URL);
+            if (!stylesheets.contains(DARK_CSS_URL)) {
+                stylesheets.add(DARK_CSS_URL);
+            }
+        } else {
+            stylesheets.remove(DARK_CSS_URL);
+            if (!stylesheets.contains(LIGHT_CSS_URL)) {
+                stylesheets.add(LIGHT_CSS_URL);
+            }
+        }
 
-        scene.getRoot().pseudoClassStateChanged(javafx.css.PseudoClass.getPseudoClass("dark"), effective == ThemeMode.DARK);
+        scene.getRoot().pseudoClassStateChanged(DARK_PSEUDO_CLASS, effective == ThemeMode.DARK);
     }
 
     private ThemeMode resolveEffectiveTheme(ThemeMode mode) {
@@ -102,5 +114,13 @@ public class ThemeManager {
             return true;
         }
         return macAppearance.toLowerCase().contains("dark");
+    }
+
+    private static String requireStylesheet(String path) {
+        var resource = ThemeManager.class.getResource(path);
+        if (resource == null) {
+            throw new IllegalStateException("Missing stylesheet resource: " + path);
+        }
+        return resource.toExternalForm();
     }
 }
